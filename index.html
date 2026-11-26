@@ -49,6 +49,7 @@
     <p id="st" class="state" role="status" aria-live="polite"></p>
     <button id="g" class="play" aria-label="ガイドを聴く"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 5.5v13l11-6.5z"/></svg></button>
     <p class="state">ガイド</p>
+    <button id="z" class="link">正面をここにする</button>
   </section>
 
   <!-- 設営のとき（index.html?setup） -->
@@ -149,9 +150,9 @@
     const listener = { x: 0.5, y: 1, z: 0 };
     const loaded = new Map();
     const guide = new Audio();
-    let heading = 0, zero = null, started = false;
+    let heading = 0, zero = null, started = false, prox = 0;
     let cur = null, state = null, stopSince = 0, leaveSince = 0, guided = false;
-    let entering = null;
+    let entering = null, candId = null, candCount = 0;
     const setupMode = () => !$('setup').hidden;
     const wOf = (id) => works.find((w) => w.id === id);
     const condOf = (id) => Exhibit.condition(d, d.works.findIndex((w) => w.id === id));
@@ -199,7 +200,7 @@
       const bestW = best ? wOf(best.id) : null;
       const bestTxt = best && bestW ? `${bestW.beaconLabel || ''} ${Math.round(best.ema)}dBm` : (started ? '受信なし' : '未開始（「はじめる」を押す）');
       const ctxState = engine.ctx ? engine.ctx.state : '未起動';
-      $('test-meta').textContent = `状態：${stNames[state] || '待機'}　｜　最強：${bestTxt}　｜　向き ${Math.round(heading)}°　奥 ${listener.z.toFixed(1)}m　｜　音：${ctxState}`;
+      $('test-meta').textContent = `状態：${stNames[state] || '待機'}　｜　最強：${bestTxt}　｜　接近 ${Math.round(prox * 100)}%　向き ${Math.round(heading)}°　奥 ${listener.z.toFixed(1)}m　｜　音：${ctxState}`;
       [...$('test-btns').children].forEach((btn) => {
         const w = wOf(btn.dataset.id);
         const v = w && w.beacon && seen.get(w.beacon);
@@ -217,7 +218,7 @@
       const ctx = ensureTestAudio();
       const apply = () => {
         const t = ctx.currentTime;
-        const vol = st === 'stop' ? 0.45 : st === 'near' ? 0.28 : st === 'leave' ? 0.12 : 0;
+        const vol = st === 'walk' ? 0 : (0.08 + 0.42 * prox);
         testOsc.frequency.cancelScheduledValues(t);
         testGain.gain.cancelScheduledValues(t);
         testOsc.frequency.setValueAtTime(sc.freq, t);
@@ -249,7 +250,7 @@
     $('test-btns').addEventListener('click', (e) => {
       const btn = e.target.closest('[data-id]'); if (!btn) return;
       const id = btn.dataset.id;
-      cur = id; state = 'stop'; show(id); status('stop', '');
+      cur = id; state = 'stop'; prox = 1; show(id); status('stop', '');
       playTestTone(id, 'stop', null);
     });
     $('test-stop').addEventListener('click', muteTestTone);
@@ -304,11 +305,15 @@
       const work = Object.assign({}, j, { sounds: (j.sounds || []).map((s) => Object.assign({}, s, { file: id + '/' + s.file })), guide: Object.assign({}, j.guide, { file: '' }) });
       await Promise.all(work.sounds.map((s) => engine.load(s.file, 'works/' + s.file.split('/').map(encodeURIComponent).join('/')).catch(() => null)));
       work.guideUrl = j.guide && j.guide.file ? 'works/' + id + '/' + j.guide.file.split('/').map(encodeURIComponent).join('/') : '';
-      work.reach = Math.min(150, Math.max(10, ...(work.sounds || []).filter((s) => s.pos && Number(s.dist) <= 150).map((s) => Number(s.dist))));
+      const inDists = (work.sounds || []).filter((s) => s.pos && !s.mute).map((s) => Number(s.dist) || 10).sort((a, b) => a - b);
+      const minD = inDists[0] || 5;
+      const medD = inDists[Math.floor(inDists.length / 2)] || 12;
+      // 手前の音を80m後ろに吹き飛ばさず、前景を通り抜けて中景へ自然に踏み込む距離（4〜18m）に設計
+      work.reach = clamp(Math.min(medD * 0.9, minD * 1.8), 4, 18);
       loaded.set(id, work);
       return work;
     }
-    const opt = () => ({ listener, cond: cur && condOf(cur) === 'guide' ? 'guide' : 'all', mutes: {}, heading, state: state || 'walk', loopGuide: false });
+    const opt = () => ({ listener, cond: cur && condOf(cur) === 'guide' ? 'guide' : (!guide.paused ? 'all' : 'sound'), mutes: {}, heading, state: state || 'walk', prox, loopGuide: false });
     function record(s) { log.push({ time: new Date().toISOString(), work: cur || '', state: s }); store.set('beaconLog', log); }
 
     function show(id) {
@@ -327,6 +332,7 @@
       status('seek', '読み込んでいます');
       const work = await load(id);
       cur = id; state = 'near'; guided = false; stopSince = 0; leaveSince = 0; zero = null;
+      if (typeof rssi === 'number') prox = clamp((rssi - th.near) / Math.max(8, (th.stop + 8) - th.near), 0.15, 1);
       guide.pause(); guide.src = work.guideUrl || '';
       engine.play(work, opt());
       show(id); record('near'); render();
@@ -340,6 +346,7 @@
       if (s === state) return;
       state = s; record(s);
       if (s === 'leave' || s === 'walk') guide.pause();
+      if (s === 'walk') { engine.stop(true); cur = null; prox = 0; status('seek', '絵に近づいてください'); return; }
       render();
     }
     function render() {
@@ -349,7 +356,7 @@
       else if (state === 'leave') status('leave', '次の絵へ');
       else status('seek', '絵に近づいてください');
     }
-    guide.addEventListener('play', render); guide.addEventListener('ended', render); guide.addEventListener('pause', render);
+    ['play', 'ended', 'pause'].forEach((ev) => guide.addEventListener(ev, () => { render(); refresh(); }));
 
     // 0.25秒ごとに、いちばん近い絵と状態を決める（隣とのパタパタ防止ヒステリシス付き）
     function tick() {
@@ -361,17 +368,27 @@
       const curV = curKey && seen.get(curKey);
       const curE = curV && now - curV.t < 3000 ? curV.ema : -120;
       if (best && best.id !== cur) {
-        // すでに鳴っている絵が範囲内のときは、切替余裕（th.hyst dBm）以上強いときだけ切り替える
         if (!cur || curE <= th.near || best.ema >= curE + (Number(th.hyst) || 0)) {
-          entering = best.id;
-          enter(best.id, best.ema).catch(() => { status('error', '音を読み込めませんでした'); }).finally(() => { entering = null; });
-          return;
-        }
-      }
-      if (!cur) { status('seek', '絵に近づいてください'); updateTestDisplay(); return; }
+          candCount = candId === best.id ? candCount + 1 : 1;
+          candId = best.id;
+          // 0.5秒（2回連続）同じ候補が勝ったときだけ切り替えて誤反応を防ぐ
+          if (!cur || candCount >= 2) {
+            candId = null; candCount = 0; entering = best.id;
+            enter(best.id, best.ema).catch(() => { status('error', '音を読み込めませんでした'); }).finally(() => { entering = null; });
+            return;
+          }
+        } else { candId = null; candCount = 0; }
+      } else { candId = null; candCount = 0; }
+      if (!cur) { prox = prox * 0.7; status('seek', '絵に近づいてください'); updateTestDisplay(); return; }
+      // ビーコン電波強度（th.near 〜 th.stop+8 dBm）を 0〜1 の無段階グラデーション（prox）に滑らかに変換
+      const targetProx = clamp((curE - th.near) / Math.max(8, (th.stop + 8) - th.near), 0, 1);
+      prox = prox * 0.65 + targetProx * 0.35;
+      const workNow = loaded.get(cur);
+      listener.z = prox * window.SENSOR.depthMax * (workNow ? workNow.reach : 15);
       if (curE > th.stop) { leaveSince = 0; if (!stopSince) stopSince = now; setState(now - stopSince >= th.hold * 1000 ? 'stop' : 'near', curE); }
       else if (curE > th.near) { stopSince = 0; leaveSince = 0; setState('near', curE); }
       else { stopSince = 0; if (!leaveSince) leaveSince = now; setState(now - leaveSince > 5000 ? 'walk' : 'leave', curE); }
+      refresh();
       updateTestDisplay();
     }
 
@@ -391,10 +408,10 @@
       if (e.alpha == null) return;
       const a = typeof e.webkitCompassHeading === 'number' ? e.webkitCompassHeading : 360 - e.alpha;
       if (!zero) zero = { a, b: e.beta || 0 };
-      heading = ((a - zero.a + 540) % 360) - 180;
-      listener.x = 0.5 + clamp((e.gamma || 0) / 40, -1, 1) * window.SENSOR.tiltX;
-      const work = cur && loaded.get(cur);
-      listener.z = clamp((zero.b - (e.beta || 0)) / 30, 0, 1) * window.SENSOR.depthMax * (work ? work.reach : 10);
+      const rawH = ((a - zero.a + 540) % 360) - 180;
+      const dH = ((rawH - heading + 540) % 360) - 180;
+      heading = ((heading + dH * 0.28 + 540) % 360) - 180;
+      listener.x = 0.5 + clamp((e.gamma || 0) / 35, -1, 1) * window.SENSOR.tiltX;
       refresh();
     }
 
@@ -418,12 +435,22 @@
       }
       navigator.bluetooth.addEventListener('advertisementreceived', (ev) => {
         const k = keyOf(ev); if (!k || typeof ev.rssi !== 'number') return;
-        const v = seen.get(k);
-        seen.set(k, { ema: v && Date.now() - v.t < 3000 ? v.ema * 0.7 + ev.rssi * 0.3 : ev.rssi, t: Date.now() });
+        const now = Date.now(), v = seen.get(k);
+        const buf = v && now - v.t < 3000 ? v.buf.concat(ev.rssi).slice(-5) : [ev.rssi];
+        const sorted = buf.slice().sort((a, b) => a - b);
+        const med = sorted[Math.floor(sorted.length / 2)];
+        const ema = v && now - v.t < 3000 ? v.ema * 0.72 + med * 0.28 : med;
+        seen.set(k, { ema, buf, t: now });
       });
       started = true; keepAwake();
       $('b').hidden = true;
       status('seek', '絵に近づいてください');
+      // 体験中に読み込み待ちが発生しないよう、6作品の音源を裏で1つずつ先読みする
+      (async () => {
+        for (const w of works) {
+          if (!loaded.has(w.id)) { try { await load(w.id); } catch (e) { } }
+        }
+      })();
       setInterval(() => {
         tick();
         if (setupMode()) { refresh(); $('seen').innerHTML = [...seen.entries()].filter(([, v]) => Date.now() - v.t < 5000).sort((a, b) => b[1].ema - a[1].ema).slice(0, 10)
@@ -431,6 +458,7 @@
       }, 250);
     });
     const PLAY = '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 5.5v13l11-6.5z"/></svg>', STOP = '<svg viewBox="0 0 24 24" fill="currentColor"><rect x="7" y="7" width="10" height="10" rx="1"/></svg>';
+    if ($('z')) $('z').addEventListener('click', () => { zero = null; });
     const gbtn = () => { $('g').innerHTML = guide.paused ? PLAY : STOP; $('g').dataset.on = guide.paused ? '' : '1'; };
     $('g').addEventListener('click', () => { if (!guide.src) return; if (guide.paused) { if (guide.ended) guide.currentTime = 0; guide.play().catch(() => { }); record('guide'); } else guide.pause(); });
     ['play', 'pause', 'ended'].forEach((ev) => guide.addEventListener(ev, gbtn));

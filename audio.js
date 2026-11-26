@@ -1,21 +1,18 @@
-// 音の経路（制作ソフト・参加者のページで共通）
+// 音の経路（制作ソフト・展示ページで共通）
 //
-// 距離の扱いは、聴覚の距離知覚の手がかり（Kolarik et al. 2016）にそろえつつ、
-// 各音の「距離(m)」「こもり(lpf)」「響き送り(reverbSend)」「方向(azimuth)」をユーザーが直接調整できるようにする。
-//  ・音量：作品内でいちばん近い音を 0 dB 基準とし、距離が2倍になるごとに約6 dB下がる（逆二乗則）
-//  ・高域・低域の距離変化：遠い音ほどローパス（空気吸収）とハイパス（近接低域の減衰）が強くかかる
-//  ・直接音と残響の比（DRR）：近い音はドライ中心、遠い音ほど響きへの送り量を増やして奥行きを作る
-//  ・全音源をモノラル化してから HRTF(PannerNode) に通す
+// ・Androidスマホでも音割れ・プチプチ・処理落ちが起きないよう、AudioContext({ latencyHint: 'playback' }) を採用し、
+//   絵の中の音（in）はフルモノラルHRTF、画面外の背景音（out）は軽量な equalpower で360°配置してCPU負荷を抑える。
+// ・ガイド音声が鳴っていないときはフル音量（-3 dB）、ガイド再生中のみ diff（15 dB）だけ滑らかにダッキングする。
+// ・ビーコン接近度 prox (0〜1) で無段階グラデーション変化（聴取点の奥行き移動＋インと画面外のバランス変化）。
 (function () {
   'use strict';
 
   const dB = (v) => Math.pow(10, (Number(v) || 0) / 20);
 
-  // 場所の響き（残響の長さと減衰の速さ）
   const SPACES = {
     open: { label: '開けた屋外（浜辺・畑）', seconds: 0.9, decay: 7.0, damp: 0.72 },
-    street: { label: '建物に囲まれた屋外（街路・広場）', seconds: 1.5, decay: 4.2, damp: 0.65 },
-    room: { label: '室内', seconds: 2.1, decay: 3.0, damp: 0.58 }
+    street: { label: '建物に囲まれた屋外（街路・広場）', seconds: 1.4, decay: 4.4, damp: 0.65 },
+    room: { label: '室内', seconds: 1.9, decay: 3.2, damp: 0.58 }
   };
   const DEFAULT_EFFECTS = { space: 'street', reverb: 0.5, diff: 15 };
   const EFFECTS = [
@@ -24,17 +21,13 @@
   ];
 
   const DIST_MIN = 1, DIST_MAX = 500;
-  const OUT_GAIN_DB = -12; // 画面外の基準補正（距離減衰と合わせて背景に馴染む）
+  const OUT_GAIN_DB = -12;
   const OUT_AZIMUTHS = [-75, 75, -115, 115, -150, 150, -95, 95, -135, 135];
 
-  // 距離（m）に応じた自然なローパス周波数（Hz）：近い音は明瞭、遠い音は空気で高域が削れる
   const autoLpf = (d) => d <= 3 ? 18000 : Math.round(Math.max(850, 18000 * Math.pow(3 / d, 0.58)));
-  // 距離（m）に応じたハイパス周波数（Hz）：遠い音ほど近接低域を削って「耳元の近さ」を消す
   const autoHpf = (d) => d <= 5 ? 30 : Math.min(280, Math.round(30 + (d - 5) * 1.5));
-  // 距離（m）に応じた残響送り量（0〜1）：近い音はドライ、遠い音ほど響きに溶ける
-  const autoSend = (d) => Math.min(0.65, 0.06 + 0.11 * Math.log(Math.max(1, d)));
+  const autoSend = (d) => Math.min(0.6, 0.06 + 0.10 * Math.log(Math.max(1, d)));
 
-  // 作品内でいちばん近い配置音の距離（m）を 0 dB の基準にする
   function refDistOf(work) {
     let min = Infinity;
     (work.sounds || []).forEach((s) => {
@@ -47,7 +40,6 @@
   }
   const distGain = (d, ref) => Math.min(2, (ref || 1) / Math.max(DIST_MIN, d || ref || 1));
 
-  // 低域を残して高域を丸めた残響インパルス（ザーッという白ノイズ感を抑える）
   function impulse(ctx, space) {
     const s = SPACES[space] || SPACES.street;
     const len = Math.floor(ctx.sampleRate * s.seconds);
@@ -60,7 +52,7 @@
         const env = Math.exp(-s.decay * i / ctx.sampleRate);
         const w = (Math.random() * 2 - 1) * env;
         lp = lp * a + w * (1 - a);
-        d[i] = lp * 0.45;
+        d[i] = lp * 0.42;
       }
     }
     return buf;
@@ -77,8 +69,6 @@
   }
 
   const fx = (work) => Object.assign({}, DEFAULT_EFFECTS, work.effects || {});
-  // 絵画上の位置 (x, y) と奥行き距離 (dist m) から 3D 空間座標 (X, Y, Z) を計算する
-  // 水平 90°（±45°）・垂直 55° で展開。X: 右が正、Y: 上が正、Z: 奥が負
   function to3D(s, listener) {
     const d = Math.min(DIST_MAX, Math.max(DIST_MIN, Number(s.dist) || 10));
     const lx = listener ? listener.x : 0.5;
@@ -105,15 +95,15 @@
     return { voice: c.voice * (mutes.voice ? 0 : 1), sound: c.sound * (mutes.sound ? 0 : 1) };
   }
 
-  function makeMonoPanner(ctx) {
+  function makeMonoPanner(ctx, useHrtf) {
     const mono = ctx.createGain();
     mono.channelCount = 1;
     mono.channelCountMode = 'explicit';
     mono.channelInterpretation = 'speakers';
     const pan = ctx.createPanner();
-    pan.panningModel = 'HRTF';
+    pan.panningModel = useHrtf ? 'HRTF' : 'equalpower';
     pan.distanceModel = 'linear';
-    pan.rolloffFactor = 0; // 距離の減衰は自前の GainNode で行う
+    pan.rolloffFactor = 0;
     pan.channelCount = 1;
     pan.channelCountMode = 'explicit';
     mono.connect(pan);
@@ -124,11 +114,11 @@
     const e = fx(work);
     const g = { sources: [], nodes: [] };
     g.limiter = ctx.createDynamicsCompressor();
-    g.limiter.threshold.value = -3;
-    g.limiter.knee.value = 6;
-    g.limiter.ratio.value = 12;
-    g.limiter.attack.value = 0.003;
-    g.limiter.release.value = 0.15;
+    g.limiter.threshold.value = -4;
+    g.limiter.knee.value = 8;
+    g.limiter.ratio.value = 10;
+    g.limiter.attack.value = 0.005;
+    g.limiter.release.value = 0.2;
     g.master = ctx.createGain();
     g.master.connect(g.limiter);
     g.limiter.connect(ctx.destination);
@@ -139,7 +129,7 @@
     g.voice = ctx.createGain(); g.voice.connect(g.master);
     g.layers = {};
     LAYERS.forEach((k) => { g.layers[k] = ctx.createGain(); g.layers[k].connect(g.sound); });
-    const horizon = opt.horizon || 600;
+    const horizon = opt.horizon || 180;
 
     const start = (buf, loop, dest, from, to, when) => {
       const s = ctx.createBufferSource();
@@ -161,7 +151,7 @@
     const events = (buf, s, dest) => {
       const rate = Math.max(0.1, Number(s.rate) || 2);
       let t = Math.random() * 60 / rate, n = 0;
-      while (t < horizon && n < 400) { start(buf, false, dest, s.start, s.end, t); t += -Math.log(1 - Math.random()) * 60 / rate; n++; }
+      while (t < horizon && n < 60) { start(buf, false, dest, s.start, s.end, t); t += -Math.log(1 - Math.random()) * 60 / rate; n++; }
     };
 
     let outIdx = 0;
@@ -170,7 +160,8 @@
       if (!buf) return;
       const vol = ctx.createGain();
       const near = ctx.createGain();
-      const { mono, pan } = makeMonoPanner(ctx);
+      // 絵の中の音（in）は高精細HRTF、画面外の背景音（out）は軽量equalpowerでスマホ負荷を下げつつ360°配置
+      const { mono, pan } = makeMonoPanner(ctx, !!s.pos);
       const hpf = ctx.createBiquadFilter(); hpf.type = 'highpass'; hpf.Q.value = 0.7;
       const lpf = ctx.createBiquadFilter(); lpf.type = 'lowpass'; lpf.Q.value = 0.7;
       const send = ctx.createGain();
@@ -179,7 +170,6 @@
       lpf.connect(near);
       near.connect(mono);
       pan.connect(g.layers[layerOf(s)]);
-      // フィルター後の音を距離に応じた量で残響へ送る（遠い音ほど響きに溶ける）
       lpf.connect(send);
       send.connect(g.conv);
 
@@ -197,7 +187,6 @@
       start(buffers.get(work.guide.file), opt.loopGuide !== false, vol, work.guide.start, work.guide.end);
     }
     update(ctx, g, work, opt, true);
-    // 動く音：3D空間上の位置1と位置2のあいだを、周期（秒）で行き来する
     g.nodes.forEach((n) => {
       const s = n.s;
       if (!s.pos || !n.pan || !s.move || !s.pos2 || !n.pan.positionX) return;
@@ -217,16 +206,35 @@
   function update(ctx, g, work, opt, immediate) {
     const e = fx(work);
     const t = ctx.currentTime;
-    const set = (p, v) => immediate ? (p.value = v) : p.setTargetAtTime(v, t, 0.05);
+    const set = (p, v) => {
+      if (!isFinite(v)) return;
+      p.cancelScheduledValues(t);
+      if (immediate) p.setValueAtTime(v, t);
+      else p.setTargetAtTime(v, t, 0.06);
+    };
     const m = mask(opt.cond, opt.mutes || {});
-    const soundBase = m.voice ? dB(-e.diff) : dB(-3);
+    const loopCount = (work.sounds || []).filter((s) => !s.mute && s.mode !== "events").length;
+    // 同時ループ数が多い作品でもリミッターで潰れず3Dの分離感を保つためのヘッドルーム補正
+    const headroom = 1 / Math.sqrt(Math.max(1, loopCount * 0.55));
+    const soundBase = (m.voice ? dB(-e.diff) : dB(-1)) * headroom;
     set(g.voice.gain, dB(work.guide && work.guide.gain) * m.voice);
     set(g.sound.gain, soundBase * m.sound);
-    const st = stateGains(work, opt.state);
-    LAYERS.forEach((k) => set(g.layers[k].gain, dB(st[k])));
-    set(g.wet.gain, e.reverb * 0.32 * soundBase * m.sound * dB(st.off));
 
-    const L = ctx.listener, h = (Number(opt.heading) || 0) * Math.PI / 180;
+    let st = stateGains(work, opt.state);
+    if (typeof opt.prox === 'number' && isFinite(opt.prox)) {
+      const pr = Math.max(0, Math.min(1, opt.prox));
+      const leaveFade = opt.state === 'walk' ? -24 : opt.state === 'leave' ? -10 : 0;
+      // 印（画家の視点）付近でもしっかり聞こえ、絵へ近づくほど奥へ没入し、離れると滑らかに引く
+      st = {
+        in: -8 + 8 * pr + leaveFade,
+        out: -3 - 9 * pr + leaveFade,
+        off: -6 + 6 * pr + leaveFade
+      };
+    }
+    LAYERS.forEach((k) => set(g.layers[k].gain, dB(st[k])));
+    set(g.wet.gain, e.reverb * 0.28 * soundBase * m.sound * dB(st.off));
+
+    const L = ctx.listener, h = (Number(opt.heading) || 0) * 1.5 * Math.PI / 180;
     if (L.forwardX) { set(L.forwardX, Math.sin(h)); set(L.forwardY, 0); set(L.forwardZ, -Math.cos(h)); set(L.upX, 0); set(L.upY, 1); set(L.upZ, 0); }
     else if (L.setOrientation) L.setOrientation(Math.sin(h), 0, -Math.cos(h), 0, 1, 0);
 
@@ -267,7 +275,10 @@
   const FADE_IN = new Float32Array(32).map((_, i) => Math.sin((i / 31) * Math.PI / 2));
   const FADE_OUT = new Float32Array(32).map((_, i) => Math.cos((i / 31) * Math.PI / 2));
   function scheduleLoops(ctx, g, until) {
+    const now = ctx.currentTime;
     (g.loops || []).forEach((lp) => {
+      // スマホが一時停止して時刻が飛んだ場合に、古いループが多重に重ならないよう現在時刻へ揃える
+      if (lp.next < now - 0.5) lp.next = now + 0.05;
       while (lp.next < until) {
         const src = ctx.createBufferSource(); src.buffer = lp.buf;
         const env = ctx.createGain(); src.connect(env); env.connect(lp.dest);
@@ -275,14 +286,20 @@
         if (lp.first) env.gain.setValueAtTime(1, t); else { env.gain.setValueAtTime(0, t); env.gain.setValueCurveAtTime(FADE_IN, t, lp.xf); }
         env.gain.setValueCurveAtTime(FADE_OUT, t + lp.L - lp.xf, lp.xf);
         src.start(t, lp.a, lp.L);
-        g.live = (g.live || []).filter((x) => x.end > ctx.currentTime); g.live.push({ node: src, end: t + lp.L });
+        g.live = (g.live || []).filter((x) => x.end > now); g.live.push({ node: src, end: t + lp.L });
         lp.first = false; lp.next += lp.step;
       }
     });
   }
   class Engine {
     constructor() { this.ctx = null; this.graph = null; this.buffers = new Map(); }
-    ensure() { if (!this.ctx) this.ctx = new (window.AudioContext || window.webkitAudioContext)(); return this.ctx; }
+    ensure() {
+      if (!this.ctx) {
+        const AC = window.AudioContext || window.webkitAudioContext;
+        try { this.ctx = new AC({ latencyHint: 'playback' }); } catch (e) { this.ctx = new AC(); }
+      }
+      return this.ctx;
+    }
     async decode(name, ab) { const b = await this.ensure().decodeAudioData(ab); this.buffers.set(name, b); return b; }
     async load(name, url) {
       if (this.buffers.has(name)) return this.buffers.get(name);
@@ -294,22 +311,37 @@
     play(work, opt) {
       const ctx = this.ensure();
       if (ctx.state === 'suspended') ctx.resume();
-      this.stop();
+      this.stop(true);
       this.graph = build(ctx, work, this.buffers, opt);
-      const t0 = ctx.currentTime + 0.05;
+      const t0 = ctx.currentTime + 0.06;
+      // 立ち上がり時のプチッというノイズを防ぐ0.45秒フェードイン
+      this.graph.master.gain.setValueAtTime(0.0001, ctx.currentTime);
+      this.graph.master.gain.linearRampToValueAtTime(1, t0 + 0.45);
       this.graph.sources.forEach((s) => s.dur === undefined ? s.node.start(t0, s.offset) : s.node.start(t0 + s.when, s.offset, s.dur));
       const g = this.graph;
       (g.loops || []).forEach((lp) => { lp.next = t0; lp.first = true; });
       scheduleLoops(ctx, g, t0 + 4);
       g.timer = setInterval(() => scheduleLoops(ctx, g, ctx.currentTime + 4), 500);
     }
-    stop() {
+    stop(fade) {
       if (!this.graph) return;
-      clearInterval(this.graph.timer);
-      (this.graph.live || []).forEach((s) => { try { s.node.stop(); } catch (e) { } });
-      this.graph.sources.forEach((s) => { try { s.node.stop(); } catch (e) { } });
-      this.graph.master.disconnect();
+      const old = this.graph;
       this.graph = null;
+      clearInterval(old.timer);
+      const cleanup = () => {
+        (old.live || []).forEach((s) => { try { s.node.stop(); } catch (e) { } });
+        old.sources.forEach((s) => { try { s.node.stop(); } catch (e) { } });
+        try { old.master.disconnect(); old.limiter.disconnect(); } catch (e) { }
+      };
+      if (fade && this.ctx && this.ctx.state === 'running') {
+        const t = this.ctx.currentTime;
+        try {
+          old.master.gain.cancelScheduledValues(t);
+          old.master.gain.setValueAtTime(old.master.gain.value, t);
+          old.master.gain.linearRampToValueAtTime(0.0001, t + 0.35);
+        } catch (e) { }
+        setTimeout(cleanup, 400);
+      } else cleanup();
     }
     update(work, opt) { if (this.graph) update(this.ctx, this.graph, work, opt, false); }
     async render(work, opt, seconds) {
@@ -355,7 +387,7 @@
   }
 
   window.Engine = Engine;
-  window.SENSOR = { tiltX: 0.25, depthMax: 0.5 };
+  window.SENSOR = { tiltX: 0.45, depthMax: 0.65 };
   window.toWav = toWav;
   window.to3D = to3D;
   window.autoLpf = autoLpf;
