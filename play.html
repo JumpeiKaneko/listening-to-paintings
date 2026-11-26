@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0D0D0D">
+<title>絵画を聴く</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="bar"><a class="brand" href="index.html">LISTENING TO PAINTINGS</a><a href="index.html" aria-label="絵の一覧へ">一覧</a></div>
+<main class="stage">
+  <section class="art">
+    <img id="picture" alt="">
+    <p class="cap" id="caption"></p>
+  </section>
+  <section class="ctl">
+    <button id="b" class="play" aria-label="聴く"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 5.5v13l11-6.5z"/></svg></button>
+    <p id="st" class="state" role="status" aria-live="polite">イヤホンをつけて、絵に向けて持つ</p>
+    <ul class="how" id="how" hidden>
+      <li><svg viewBox="0 0 40 40" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="15" y="10" width="10" height="18" rx="2"/><path d="M8 20a12 12 0 0 1 4-9M32 20a12 12 0 0 1-4 9"/><path d="M12 11l-.5 3.5L15 14M28 29l.5-3.5L25 26"/></svg>向き</li>
+      <li><svg viewBox="0 0 40 40" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="15" y="11" width="10" height="18" rx="2" transform="rotate(-18 20 20)"/><path d="M6 31h28M9 28l-3 3 3 3M31 28l3 3-3 3"/></svg>傾き</li>
+      <li><svg viewBox="0 0 40 40" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M14 30l6-20h4l-4 20z"/><path d="M28 24V8M24 12l4-4 4 4"/></svg>奥へ</li>
+    </ul>
+    <button id="z" class="link" hidden>正面をここにする</button>
+  </section>
+</main>
+<script src="exhibit.js"></script>
+<script src="audio.js"></script>
+<script>
+  // 音は絵の中の位置に置いたまま、その場で3Dに配置して鳴らす（HRTF）。
+  // スマホの向き：聴く向き／左右の傾き：聴く点が左右にずれる／前に倒す：聴く点が絵の奥へ進む
+  const $ = (id) => document.getElementById(id);
+  const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+  const ICON = { play: '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 5.5v13l11-6.5z"/></svg>', stop: '<svg viewBox="0 0 24 24" fill="currentColor"><rect x="7" y="7" width="10" height="10" rx="1"/></svg>' };
+  const setBtn = (on) => { $('b').dataset.on = on ? '1' : ''; $('b').innerHTML = on ? ICON.stop : ICON.play; $('b').setAttribute('aria-label', on ? '止める' : '聴く'); };
+  const say = (t) => { $('st').innerHTML = t; };
+  let lock = null;
+  const keepAwake = async () => { try { if ('wakeLock' in navigator) lock = await navigator.wakeLock.request('screen'); } catch (e) { } };
+  document.addEventListener('visibilitychange', () => { if (lock && document.visibilityState === 'visible') keepAwake(); });
+
+  Exhibit.load().then(async (d) => {
+    const id = new URLSearchParams(location.search).get('w');
+    const i = d.works.findIndex((w) => w.id === id);
+    const w = d.works[i];
+    if (!w) { say('この絵は見つかりませんでした'); $('b').hidden = true; return; }
+    document.title = w.title + '｜絵画を聴く';
+    $('caption').innerHTML = `<span class="ti">${Exhibit.esc(w.title)}</span><span class="ar">${Exhibit.esc(w.artist)}　${Exhibit.esc(w.year || '')}</span>`;
+    if (w.files.image) { $('picture').src = w.files.image; $('picture').alt = w.artist + '《' + w.title + '》'; }
+    const cond = Exhibit.condition(d, i);
+    if (cond === 'picture') { $('b').hidden = true; say('この絵は、音なしでご覧ください'); return; }
+
+    // 設定と音のファイルがない絵は、書き出した音をそのまま鳴らす
+    if (!w.files.work) {
+      const src = cond === 'guide' ? w.files.guide : w.files.mix;
+      if (!src) { $('b').hidden = true; say('音がまだありません'); return; }
+      const a = new Audio(src);
+      $('b').addEventListener('click', () => { if (a.paused) { a.play(); keepAwake(); } else a.pause(); });
+      a.addEventListener('play', () => { setBtn(true); say('<b>聴いています</b>'); });
+      a.addEventListener('pause', () => { setBtn(false); say(''); });
+      a.addEventListener('ended', () => { setBtn(false); say('終わりました'); });
+      return;
+    }
+
+    const work = await (await fetch(w.files.work, { cache: 'no-store' })).json();
+    const base = 'works/' + w.id + '/';
+    const engine = new Engine();
+    const listener = { x: 0.5, y: 1, z: 0 };
+    const reach = Math.min(150, Math.max(10, ...(work.sounds || []).filter((s) => s.pos && Number(s.dist) <= 150).map((s) => Number(s.dist)))); // 傾けて進める奥行きの基準：置いた音のうちいちばん遠いもの（150 m まで）
+    let heading = 0, zero = null, playing = false, sensor = true, last = '';
+    const opt = () => ({ listener, cond: cond === 'guide' ? 'guide' : 'all', mutes: {}, heading, loopGuide: false });
+    let queued = false;
+    const refresh = () => {
+      if (queued) return; queued = true;
+      requestAnimationFrame(() => {
+        queued = false;
+        if (!playing) return;
+        engine.update(work, opt());
+        const t = !sensor ? '<b>聴いています</b>' : listener.z > 1 ? '<b>絵の奥へ</b>' : '<b>聴いています</b>';
+        if (t !== last) { last = t; say(t); }
+      });
+    };
+    function onOrient(e) {
+      if (e.alpha == null) return;
+      const a = typeof e.webkitCompassHeading === 'number' ? e.webkitCompassHeading : 360 - e.alpha; // 時計回りの方位
+      if (!zero) zero = { a, b: e.beta || 0 };
+      heading = ((a - zero.a + 540) % 360) - 180;
+      listener.x = 0.5 + clamp((e.gamma || 0) / 40, -1, 1) * window.SENSOR.tiltX;
+      listener.z = clamp((zero.b - (e.beta || 0)) / 30, 0, 1) * window.SENSOR.depthMax * reach;
+      refresh();
+    }
+
+    $('b').addEventListener('click', async () => {
+      if (playing) { engine.stop(); playing = false; setBtn(false); $('how').hidden = true; $('z').hidden = true; last = ''; say('イヤホンをつけて、絵に向けて持つ'); return; }
+      $('b').disabled = true; say('読み込んでいます');
+      try {
+        // iPhone は、タップした瞬間に音の開始と向きのセンサーの許可を求める必要がある
+        const ctx = engine.ensure(); ctx.resume();
+        const perm = (typeof DeviceOrientationEvent !== 'undefined' && typeof DeviceOrientationEvent.requestPermission === 'function')
+          ? DeviceOrientationEvent.requestPermission().catch(() => 'denied') : Promise.resolve('granted');
+        sensor = (await perm) === 'granted';
+        const files = [...(work.sounds || []).map((s) => s.file), work.guide && work.guide.file].filter(Boolean);
+        await Promise.all(files.map((f) => engine.load(f, base + f.split('/').map(encodeURIComponent).join('/')).catch(() => null)));
+        engine.play(work, opt());
+        playing = true; keepAwake();
+        $('b').disabled = false; setBtn(true);
+        $('how').hidden = !sensor; $('z').hidden = !sensor;
+        if (sensor) window.addEventListener('deviceorientation', onOrient);
+        refresh();
+      } catch (err) { $('b').disabled = false; setBtn(false); say('音を鳴らせませんでした'); }
+    });
+    $('z').addEventListener('click', () => { zero = null; last = ''; say('<b>正面を合わせました</b>'); });
+  });
+</script>
+</body>
+</html>

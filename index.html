@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0D0D0D">
+<title>絵画を聴く</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="bar"><span class="brand">LISTENING TO PAINTINGS</span></div>
+<main class="home">
+  <h1>絵画を聴く</h1>
+  <p class="sub">イヤホンをつけてください</p>
+  <div class="list" id="list"></div>
+  <details class="staff">
+    <summary>番号</summary>
+    <input id="p" inputmode="numeric" autocomplete="off" placeholder="受付の番号" aria-label="受付の番号">
+  </details>
+</main>
+<script src="exhibit.js"></script>
+<script>
+  Exhibit.load().then((d) => {
+    const p = document.getElementById('p');
+    p.value = Exhibit.participant() || '';
+    p.addEventListener('input', () => Exhibit.setParticipant(p.value.trim()));
+    document.getElementById('list').innerHTML = d.works.map((w, i) => `<a class="item" href="play.html?w=${encodeURIComponent(w.id)}">
+      ${w.files.image ? `<img src="${w.files.image}" alt="" loading="lazy">` : ''}
+      <span class="t"><span class="n">0${i + 1}</span><span class="ti">${Exhibit.esc(w.title)}</span><span class="ar">${Exhibit.esc(w.artist.split('・').pop())}</span></span></a>`).join('');
+  });
+</script>
+</body>
+</html>
