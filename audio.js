@@ -21,7 +21,8 @@
     street: { label: '建物に囲まれた屋外（街路・広場）', seconds: 2.0, decay: 3.2 },
     room: { label: '室内', seconds: 2.6, decay: 2.4 }
   };
-  const DEFAULT_EFFECTS = { space: 'street', reverb: 0.5, diff: 15 };
+  const DEFAULT_EFFECTS = { space: 'street', reverb: 0.5, diff: 15, out: -18 };
+  // out：絵に置かない音（画面外）の音量（dB）。絵に置いた音のうちいちばん近い音を 0 dB とした値。仮の値
   // 参加者が動かせる項目
   const EFFECTS = [
     { key: 'reverb', label: '響きの量', min: 0, max: 1, step: 0.01, fmt: (v) => Math.round(v * 100) + '%' },
@@ -56,6 +57,8 @@
     return { in: Number(t.in) || 0, out: Number(t.out) || 0, off: Number(t.off) || 0 };
   }
 
+  // 画面外の音を置く方向（度）。画角（±30°）の外に、左右交互に散らす
+  const OUT_AZ = [-70, 70, -120, 120, -160, 160, -95, 95];
   const fx = (work) => Object.assign({}, DEFAULT_EFFECTS, work.effects || {});
   // 絵画上の位置 (x, y) と奥行き距離 (dist m) から、画家の視点 (0, 0, 0) を原点とする 3D 空間座標 (X, Y, Z) を計算する
   // 水平視野角 60°・垂直視野角 45°。X: 右が正、Y: 上が正、Z: 奥が負（Web Audio API / Unity 準拠）
@@ -79,14 +82,19 @@
   function direction(s, listener) { return to3D(s, listener); }
 
   function mask(cond, mutes) {
-    const c = cond === 'picture' ? { voice: 0, sound: 0 } : cond === 'guide' ? { voice: 1, sound: 0 } : { voice: 1, sound: 1 };
+    const c = cond === 'picture' ? { voice: 0, sound: 0 } : cond === 'guide' ? { voice: 1, sound: 0 } : cond === 'sound' ? { voice: 0, sound: 1 } : { voice: 1, sound: 1 };
     return { voice: c.voice * (mutes.voice ? 0 : 1), sound: c.sound * (mutes.sound ? 0 : 1) };
   }
 
   function build(ctx, work, buffers, opt) {
     const e = fx(work);
     const g = { sources: [], nodes: [] };
-    g.master = ctx.createGain(); g.master.connect(ctx.destination);
+    g.master = ctx.createGain();
+    // 音が重なって割れないように、最後に軽くリミッターをかける
+    g.limit = ctx.createDynamicsCompressor(); g.limit.threshold.value = -6; g.limit.knee.value = 6; g.limit.ratio.value = 8; g.limit.attack.value = 0.003; g.limit.release.value = 0.25;
+    g.master.connect(g.limit); g.limit.connect(ctx.destination);
+    // 距離の基準：絵に置いた音のうちいちばん近い音を 0 dB にする（そこから距離が2倍ごとに -6 dB）
+    g.dref = Math.max(DIST_MIN, Math.min.apply(null, (work.sounds || []).filter((s) => s.pos && !s.mute).map((s) => Number(s.dist) || 10).concat([DIST_MAX])));
     g.conv = ctx.createConvolver(); g.conv.buffer = impulse(ctx, e.space);
     g.wet = ctx.createGain(); g.conv.connect(g.wet); g.wet.connect(g.master);
     g.sound = ctx.createGain(); g.sound.connect(g.master);
@@ -105,6 +113,16 @@
       g.sources.push({ node: s, offset: a, dur: loop ? undefined : b - a, when: when || 0 });
       return b - a;
     };
+    // 続けて鳴る音：同じ音を2つ重ね、つなぎ目をクロスフェード（等パワー）でつないでループする。
+    // 重ねる長さは音の長さの1/4（0.3〜2秒）。3秒の音なら0.75秒、20秒の音なら2秒
+    g.loops = g.loops || [];
+    const xloop = (buf, dest, from, to) => {
+      const a = Math.max(0, Math.min(Number(from) || 0, buf.duration - 0.01));
+      const b = Number(to) > a ? Math.min(Number(to), buf.duration) : buf.duration;
+      const L = b - a, xf = Math.min(2, Math.max(0.3, L * 0.25));
+      if (L < xf * 2 + 0.05) { start(buf, true, dest, from, to); return; } // 短すぎる音はそのままループ
+      g.loops.push({ buf, dest, a, L, xf, step: L - xf, next: 0, first: true });
+    };
     // ときどき鳴る音：1分あたりの回数を平均に、間隔をばらつかせて（指数分布）鳴らす
     const events = (buf, s, dest) => {
       const rate = Math.max(0.1, Number(s.rate) || 2);
@@ -112,21 +130,40 @@
       while (t < horizon && n < 400) { start(buf, false, dest, s.start, s.end, t); t += -Math.log(1 - Math.random()) * 60 / rate; n++; }
     };
 
+    let outIndex = 0;
     (work.sounds || []).forEach((s) => {
       const buf = buffers.get(s.file);
       if (!buf || s.mute) return;
       const vol = ctx.createGain();
       const send = ctx.createGain(); vol.connect(send); send.connect(g.conv);
       const n = { s, vol, send };
+      if (!s.pos) send.gain.value = dB(e.out);
       if (s.pos) {
         const near = ctx.createGain();
         const pan = ctx.createPanner();
         pan.panningModel = 'HRTF'; pan.distanceModel = 'linear'; pan.rolloffFactor = 0; // 距離の減衰は near で行う
+        // 立体に置く音はモノラルにしてから方向をつける（ステレオのままだと元の左右の広がりが残り、方向がにじむ）
+        near.channelCount = 1; near.channelCountMode = 'explicit'; near.channelInterpretation = 'speakers';
+        pan.channelCount = 1; pan.channelCountMode = 'explicit';
         const air = ctx.createBiquadFilter(); air.type = 'highshelf'; air.frequency.value = 4000;
         vol.connect(near); near.connect(pan); pan.connect(air); air.connect(g.layers[layerOf(s)]);
         Object.assign(n, { near, pan, air });
-      } else vol.connect(g.layers[layerOf(s)]);
-      if (s.mode === 'events') events(buf, s, vol); else start(buf, true, vol, s.start, s.end);
+      } else {
+        // 画面外の音：方向の記録がないものが多いので、方向はつけずに遠くの音として扱う（高域を少し落とし、音量を out に）
+        // 画面外の音：絵の外側（画角の外：左右・後ろ）に方向をつけて置く。s.az（度。右が正、180 が真後ろ）があればその方向、なければ順に散らす
+        const far = ctx.createGain();
+        const pan = ctx.createPanner();
+        pan.panningModel = 'HRTF'; pan.distanceModel = 'linear'; pan.rolloffFactor = 0;
+        far.channelCount = 1; far.channelCountMode = 'explicit'; far.channelInterpretation = 'speakers';
+        pan.channelCount = 1; pan.channelCountMode = 'explicit';
+        const az = (Number.isFinite(Number(s.az)) && s.az !== '' && s.az !== null ? Number(s.az) : OUT_AZ[outIndex++ % OUT_AZ.length]) * Math.PI / 180;
+        const X = 10 * Math.sin(az), Z = -10 * Math.cos(az);
+        if (pan.positionX) { pan.positionX.value = X; pan.positionY.value = 0; pan.positionZ.value = Z; } else pan.setPosition(X, 0, Z);
+        const air = ctx.createBiquadFilter(); air.type = 'highshelf'; air.frequency.value = 3000; air.gain.value = -6;
+        vol.connect(far); far.connect(pan); pan.connect(air); air.connect(g.layers[layerOf(s)]);
+        Object.assign(n, { far });
+      }
+      if (s.mode === 'events') events(buf, s, vol); else xloop(buf, vol, s.start, s.end);
       g.nodes.push(n);
     });
 
@@ -161,7 +198,7 @@
     set(g.sound.gain, dB(-e.diff) * m.sound);
     const st = stateGains(work, opt.state);
     LAYERS.forEach((k) => set(g.layers[k].gain, dB(st[k])));
-    set(g.wet.gain, e.reverb * 0.6 * dB(-e.diff) * m.sound * dB(st.off));
+    set(g.wet.gain, e.reverb * 0.25 * dB(-e.diff) * m.sound * dB(st.off));
     // スマホを向けた方向（度）。聴く人の向きを回すので、音は絵の構図の位置に残る
     const L = ctx.listener, h = (Number(opt.heading) || 0) * Math.PI / 180;
     if (L.forwardX) { set(L.forwardX, Math.sin(h)); set(L.forwardY, 0); set(L.forwardZ, -Math.cos(h)); set(L.upX, 0); set(L.upY, 1); set(L.upZ, 0); }
@@ -170,10 +207,11 @@
     g.nodes.forEach((n) => {
       const on = !solo || n.s.solo ? 1 : 0;
       set(n.vol.gain, dB(n.s.gain) * on);
+      if (n.far) set(n.far.gain, dB(e.out));
       if (n.pan) {
         const P = to3D(n.s, opt.listener);
         const d = Math.min(DIST_MAX, Math.max(DIST_MIN, P.dist));
-        set(n.near.gain, distGain(d));
+        set(n.near.gain, distGain(d) / distGain(g.dref || 1));
         if (n.s.move && n.s.pos2 && !immediate) { /* 動く音の位置は build で決めた動きに任せる */ }
         else if (n.pan.positionX) { set(n.pan.positionX, P.x); set(n.pan.positionY, P.y); set(n.pan.positionZ, P.z); } else n.pan.setPosition(P.x, P.y, P.z);
         set(n.air.gain, airLoss(d));
@@ -181,6 +219,24 @@
     });
   }
 
+
+  // クロスフェードのループを、時刻 until まで並べる（再生中は少しずつ先へ、書き出しでは最後まで）
+  const FADE_IN = new Float32Array(32).map((_, i) => Math.sin((i / 31) * Math.PI / 2));
+  const FADE_OUT = new Float32Array(32).map((_, i) => Math.cos((i / 31) * Math.PI / 2));
+  function scheduleLoops(ctx, g, until) {
+    (g.loops || []).forEach((lp) => {
+      while (lp.next < until) {
+        const src = ctx.createBufferSource(); src.buffer = lp.buf;
+        const env = ctx.createGain(); src.connect(env); env.connect(lp.dest);
+        const t = lp.next;
+        if (lp.first) env.gain.setValueAtTime(1, t); else { env.gain.setValueAtTime(0, t); env.gain.setValueCurveAtTime(FADE_IN, t, lp.xf); }
+        env.gain.setValueCurveAtTime(FADE_OUT, t + lp.L - lp.xf, lp.xf);
+        src.start(t, lp.a, lp.L);
+        g.live = (g.live || []).filter((x) => x.end > ctx.currentTime); g.live.push({ node: src, end: t + lp.L });
+        lp.first = false; lp.next += lp.step;
+      }
+    });
+  }
   class Engine {
     constructor() { this.ctx = null; this.graph = null; this.buffers = new Map(); }
     ensure() { if (!this.ctx) this.ctx = new (window.AudioContext || window.webkitAudioContext)(); return this.ctx; }
@@ -199,11 +255,17 @@
       this.graph = build(ctx, work, this.buffers, opt);
       const t0 = ctx.currentTime + 0.05;
       this.graph.sources.forEach((s) => s.dur === undefined ? s.node.start(t0, s.offset) : s.node.start(t0 + s.when, s.offset, s.dur));
+      const g = this.graph;
+      (g.loops || []).forEach((lp) => { lp.next = t0; lp.first = true; });
+      scheduleLoops(ctx, g, t0 + 4);
+      g.timer = setInterval(() => scheduleLoops(ctx, g, ctx.currentTime + 4), 500);
     }
     stop() {
       if (!this.graph) return;
+      clearInterval(this.graph.timer);
+      (this.graph.live || []).forEach((s) => { try { s.node.stop(); } catch (e) { } });
       this.graph.sources.forEach((s) => { try { s.node.stop(); } catch (e) { } });
-      this.graph.master.disconnect();
+      this.graph.master.disconnect(); this.graph.limit.disconnect();
       this.graph = null;
     }
     update(work, opt) { if (this.graph) update(this.ctx, this.graph, work, opt, false); }
@@ -216,6 +278,7 @@
         const ctx = new OfflineAudioContext(2, Math.floor(sr * seconds), sr);
         const g = build(ctx, w, this.buffers, Object.assign({}, opt, r, { loopGuide: false, horizon: seconds }));
         g.sources.forEach((s) => s.dur === undefined ? s.node.start(0, s.offset) : s.node.start(s.when, s.offset, s.dur));
+        scheduleLoops(ctx, g, seconds);
         out[name] = await ctx.startRendering();
       }
       out.measured = rmsDb(out.guide) - rmsDb(out.sounds);

@@ -6,12 +6,7 @@ window.Exhibit = (function () {
   async function load() { const r = await fetch('data.json', { cache: 'no-store' }); return r.json(); }
   const participant = () => get('participant');
   const setParticipant = (v) => set('participant', v);
-  // 番号がある人は、番号と絵の順番で条件を回す（ラテン方格）。番号がない人は、いつも「ガイドと音あり」
-  function condition(data, index) {
-    const p = parseInt(participant(), 10);
-    if (!p) return 'all';
-    const c = data.conditions || ['picture', 'guide', 'all'];
-    return c[((p - 1) + index) % c.length];
-  }
+  // 28日は全員が6枚すべてをガイドと音ありで聴く（体験後のアンケートで6枚すべての音量・声と音・響きを聞くため）
+  function condition() { return 'all'; }
   return { esc, load, participant, setParticipant, condition };
 })();

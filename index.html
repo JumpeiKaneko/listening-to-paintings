@@ -3,30 +3,234 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta name="theme-color" content="#0D0D0D">
+<meta name="theme-color" content="#111111">
 <title>絵画を聴く</title>
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
 <div class="bar"><span class="brand">LISTENING TO PAINTINGS</span></div>
-<main class="home">
-  <h1>絵画を聴く</h1>
-  <p class="sub">イヤホンをつけてください</p>
-  <div class="list" id="list"></div>
-  <details class="staff">
-    <summary>番号</summary>
-    <input id="p" inputmode="numeric" autocomplete="off" placeholder="受付の番号" aria-label="受付の番号">
-  </details>
+<main class="stage">
+  <!-- はじめる前／探しているあいだ -->
+  <section class="seek" id="seek">
+    <div class="radar" id="radar" hidden><i></i></div>
+    <button id="b" class="play" aria-label="はじめる"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 5.5v13l11-6.5z"/></svg></button>
+    <p class="msg" id="msg" role="status" aria-live="polite">イヤホンをつけて、はじめる</p>
+  </section>
+  <!-- 絵の前 -->
+  <section class="art" id="art" hidden>
+    <p class="cap" id="caption"></p>
+  </section>
+  <section class="ctl" id="controls" hidden>
+    <p id="st" class="state" role="status" aria-live="polite"></p>
+    <button id="g" class="play" aria-label="ガイドを聴く"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 5.5v13l11-6.5z"/></svg></button>
+    <p class="state">ガイド</p>
+  </section>
+
+  <!-- 設営のとき（index.html?setup） -->
+  <section class="setup" id="setup" hidden>
+    <h2>ビーコンの設定</h2>
+    <p class="muted">「はじめる」を押すと、見えているビーコンの名前が下に出ます（絵との対応は data.json に書きます）。</p>
+    <table class="bt" id="map"></table>
+    <p style="margin-top:12px">近づく <input class="th" id="th-near" type="number">dBm ／ 止まる <input class="th" id="th-stop" type="number">dBm が <input class="th" id="th-hold" type="number">秒</p>
+    <table class="bt" id="seen"></table>
+    <p class="debug" id="pos"></p>
+    <p><button id="log" class="sbtn">記録を保存（CSV）</button> <button id="clear" class="sbtn">記録を消す</button></p>
+  </section>
+  <p style="text-align:center"><button class="link" id="toggle">設定</button></p>
 </main>
+
 <script src="exhibit.js"></script>
+<script src="audio.js"></script>
 <script>
-  Exhibit.load().then((d) => {
-    const p = document.getElementById('p');
-    p.value = Exhibit.participant() || '';
-    p.addEventListener('input', () => Exhibit.setParticipant(p.value.trim()));
-    document.getElementById('list').innerHTML = d.works.map((w, i) => `<a class="item" href="play.html?w=${encodeURIComponent(w.id)}">
-      ${w.files.image ? `<img src="${w.files.image}" alt="" loading="lazy">` : ''}
-      <span class="t"><span class="n">0${i + 1}</span><span class="ti">${Exhibit.esc(w.title)}</span><span class="ar">${Exhibit.esc(w.artist.split('・').pop())}</span></span></a>`).join('');
+  // 歩いてまわる：ビーコンで近くの絵を見つけ、その絵の音をその場で3Dに配置して鳴らす（HRTF）。
+  // 状態：歩く／近づく／止まる／離れる（制作ソフトの「インタラクション」の層ごとの音量を使う）。止まると言葉のガイドが流れる。
+  // スマホの向き：聴く向き／左右の傾き：聴く点が左右にずれる／前に倒す：聴く点が絵の奥へ進む
+  // ビーコンの読み取りは Android の Chrome（Web Bluetooth のスキャン。chrome://flags の Experimental Web Platform features を有効にする）
+  const $ = (id) => document.getElementById(id);
+  const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+  const store = { get: (k, d) => { try { return JSON.parse(localStorage.getItem(k)) || d; } catch (e) { return d; } }, set: (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) { } } };
+  const IBEACON = 0x004C, EDDYSTONE = '0000feaa-0000-1000-8000-00805f9b34fb';
+  const hex = (dv, a, b) => { let s = ''; for (let i = a; i < b; i++) s += dv.getUint8(i).toString(16).padStart(2, '0'); return s; };
+  let lastStatus = '';
+  // 画面：s が 'seek' なら探す画面、それ以外は絵の画面のひとこと
+  const status = (s, txt) => {
+    const key = s + '|' + txt; if (key === lastStatus) return; lastStatus = key;
+    if (s === 'seek' || s === 'error') { $('seek').hidden = false; $('art').hidden = true; $('controls').hidden = true; $('radar').hidden = s === 'error'; $('msg').innerHTML = txt; }
+    else { $('seek').hidden = true; $('art').hidden = false; $('controls').hidden = false; $('st').innerHTML = txt; }
+  };
+  let lock = null;
+  const keepAwake = async () => { try { if ('wakeLock' in navigator) lock = await navigator.wakeLock.request('screen'); } catch (e) { } };
+  document.addEventListener('visibilitychange', () => { if (lock && document.visibilityState === 'visible') keepAwake(); });
+
+  // 広告からビーコンの名前を作る：iBeacon は major-minor、Eddystone-UID は instance、ほかは機器の名前
+  function keyOf(ev) {
+    const md = ev.manufacturerData && ev.manufacturerData.get(IBEACON);
+    if (md && md.byteLength >= 23 && md.getUint8(0) === 0x02 && md.getUint8(1) === 0x15) return 'iBeacon ' + md.getUint16(18) + '-' + md.getUint16(20);
+    const sd = ev.serviceData && ev.serviceData.get(EDDYSTONE);
+    if (sd && sd.byteLength >= 18 && sd.getUint8(0) === 0x00) return 'Eddystone ' + hex(sd, 12, 18);
+    if (ev.device && ev.device.name) return '名前 ' + ev.device.name;
+    return null;
+  }
+
+  Exhibit.load().then(async (d) => {
+    const works = d.works.filter((w) => w.files.work);
+    let map = {};                       // ビーコン → 作品ID
+    works.forEach((w) => { if (w.beacon && !Object.values(map).includes(w.id)) map[w.beacon] = w.id; });
+    const th = Object.assign({ near: -78, stop: -64, hold: 1.5 }, store.get('beaconTh', {}));
+    const log = store.get('beaconLog', []);
+    const seen = new Map();                                      // ビーコン → { ema, t }
+    const engine = new Engine();
+    const listener = { x: 0.5, y: 1, z: 0 };
+    const loaded = new Map();                                    // 作品ID → 音を読み込んだ設定
+    const guide = new Audio();
+    let heading = 0, zero = null, started = false;
+    let cur = null, state = null, stopSince = 0, leaveSince = 0, guided = false;
+    let entering = null;                                         // 読み込み中の絵（二重に始めない）
+    const setupMode = () => !$('setup').hidden;
+
+    // ---- 設定の画面 ----
+    $('toggle').addEventListener('click', (e) => { e.preventDefault(); $('setup').hidden = !$('setup').hidden; });
+    if (new URLSearchParams(location.search).has('setup')) $('setup').hidden = false;
+    $('th-near').value = th.near; $('th-stop').value = th.stop; $('th-hold').value = th.hold;
+    ['near', 'stop', 'hold'].forEach((k) => $('th-' + k).addEventListener('change', (e) => { th[k] = Number(e.target.value); store.set('beaconTh', th); }));
+    function renderMap() {
+      $('map').innerHTML = '<tr><th>絵</th><th>ビーコン</th><th></th></tr>' + works.map((w) => {
+        const k = Object.keys(map).find((b) => map[b] === w.id) || '（なし）';
+        return `<tr><td>${Exhibit.esc(w.title)}</td><td>${Exhibit.esc(k)}</td><td></td></tr>`;
+      }).join('');
+    }
+    renderMap();
+    $('log').addEventListener('click', () => {
+      const csv = 'time,work,state\n' + log.map((r) => [r.time, r.work, r.state].join(',')).join('\n');
+      const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv' })); a.download = 'beacon-log-' + new Date().toISOString().slice(0, 10) + '.csv'; a.click();
+    });
+    $('clear').addEventListener('click', () => { if (confirm('記録を消しますか？')) { log.length = 0; store.set('beaconLog', log); } });
+
+    // ---- 音 ----
+    const wOf = (id) => works.find((w) => w.id === id);
+    const condOf = (id) => Exhibit.condition(d, d.works.findIndex((w) => w.id === id));
+    async function load(id) {
+      if (loaded.has(id)) return loaded.get(id);
+      const w = wOf(id);
+      const j = await (await fetch(w.files.work, { cache: 'no-store' })).json();
+      // 作品ごとに音の名前が重ならないよう、ファイル名の前に作品IDを付ける
+      const work = Object.assign({}, j, { sounds: (j.sounds || []).map((s) => Object.assign({}, s, { file: id + '/' + s.file })), guide: Object.assign({}, j.guide, { file: '' }) });
+      await Promise.all(work.sounds.map((s) => engine.load(s.file, 'works/' + s.file.split('/').map(encodeURIComponent).join('/')).catch(() => null)));
+      work.guideUrl = j.guide && j.guide.file ? 'works/' + id + '/' + j.guide.file.split('/').map(encodeURIComponent).join('/') : '';
+      work.reach = Math.min(150, Math.max(10, ...(work.sounds || []).filter((s) => s.pos && Number(s.dist) <= 150).map((s) => Number(s.dist)))); // 傾けて進める奥行きの基準：置いた音のうちいちばん遠いもの（150 m まで）
+      loaded.set(id, work);
+      return work;
+    }
+    const opt = () => ({ listener, cond: cur && condOf(cur) === 'guide' ? 'guide' : 'all', mutes: {}, heading, state: state || 'walk', loopGuide: false });
+    function record(s) { log.push({ time: new Date().toISOString(), work: cur || '', state: s }); store.set('beaconLog', log); }
+
+    function show(id) {
+      const w = wOf(id);
+      $('caption').innerHTML = `<span class="ti">${Exhibit.esc(w.title)}</span><span class="ar">${Exhibit.esc(w.artist)}　${Exhibit.esc(w.year || '')}</span>`;
+      
+    }
+    async function enter(id) {
+      if (condOf(id) === 'picture') { engine.stop(); guide.pause(); cur = id; state = 'near'; guided = true; show(id); status('near', 'この絵は、音なしでご覧ください'); record('near'); return; }
+      status('seek', '読み込んでいます');
+      const work = await load(id);
+      cur = id; state = 'near'; guided = false; stopSince = 0; leaveSince = 0; zero = null;
+      guide.pause(); guide.src = work.guideUrl || '';
+      engine.play(work, opt());
+      show(id); record('near'); render();
+    }
+    function setState(s) {
+      if (s === state) return;
+      state = s; record(s);
+      if (s === 'leave' || s === 'walk') guide.pause();
+      render();
+    }
+    // 状態の表示（来場者向け）
+    function render() {
+      if (!cur) return;
+      if (condOf(cur) === 'picture') return;
+      const guiding = !guide.paused;
+      if (state === 'stop' || state === 'near') status(state, '');
+      else if (state === 'leave') status('leave', '次の絵へ');
+      else status('seek', '絵に近づいてください');
+    }
+    guide.addEventListener('play', render); guide.addEventListener('ended', render); guide.addEventListener('pause', render);
+
+    // 0.25秒ごとに、いちばん近い絵と状態を決める
+    function tick() {
+      const now = Date.now();
+      let best = null;
+      for (const [k, v] of seen) if (map[k] && now - v.t < 3000 && v.ema > th.near && (!best || v.ema > best.ema)) best = { id: map[k], ema: v.ema };
+      if (entering) return;
+      if (best && best.id !== cur) { entering = best.id; enter(best.id).catch(() => { status('error', '音を読み込めませんでした'); }).finally(() => { entering = null; }); return; }
+      if (!cur) { status('seek', '絵に近づいてください'); return; }
+      const k = Object.keys(map).find((b) => map[b] === cur);
+      const v = k && seen.get(k);
+      const e = v && now - v.t < 3000 ? v.ema : -120;
+      if (e > th.stop) { leaveSince = 0; if (!stopSince) stopSince = now; setState(now - stopSince >= th.hold * 1000 ? 'stop' : 'near'); }
+      else if (e > th.near) { stopSince = 0; leaveSince = 0; setState('near'); }
+      else { stopSince = 0; if (!leaveSince) leaveSince = now; setState(now - leaveSince > 5000 ? 'walk' : 'leave'); }
+    }
+
+    // ---- 向きのセンサー ----
+    let queued = false;
+    function refresh() {
+      if (queued) return; queued = true;
+      requestAnimationFrame(() => {
+        queued = false;
+        const work = cur && loaded.get(cur);
+        if (work && engine.playing) engine.update(work, opt());
+        if (setupMode()) { const names = { walk: '歩く', near: '近づく', stop: '止まる', leave: '離れる' }; $('pos').textContent = `${names[state] || '—'}　向き ${Math.round(heading)}°　左右 ${Math.round((listener.x - 0.5) * 200)}%　奥へ ${listener.z.toFixed(1)} m`; }
+      });
+    }
+    function onOrient(e) {
+      if (e.alpha == null) return;
+      const a = typeof e.webkitCompassHeading === 'number' ? e.webkitCompassHeading : 360 - e.alpha;
+      if (!zero) zero = { a, b: e.beta || 0 };
+      heading = ((a - zero.a + 540) % 360) - 180;
+      listener.x = 0.5 + clamp((e.gamma || 0) / 40, -1, 1) * window.SENSOR.tiltX;
+      const work = cur && loaded.get(cur);
+      listener.z = clamp((zero.b - (e.beta || 0)) / 30, 0, 1) * window.SENSOR.depthMax * (work ? work.reach : 10);
+      refresh();
+    }
+
+    // ---- はじめる ----
+    $('b').addEventListener('click', async () => {
+      if (started) return;
+      // タップした瞬間に、音の開始・向きのセンサー・ビーコンのスキャンの許可をまとめて求める
+      const ctx = engine.ensure(); ctx.resume();
+      guide.play().then(() => guide.pause()).catch(() => { });
+      const perm = (typeof DeviceOrientationEvent !== 'undefined' && typeof DeviceOrientationEvent.requestPermission === 'function')
+        ? DeviceOrientationEvent.requestPermission().catch(() => 'denied') : Promise.resolve('granted');
+      const scan = navigator.bluetooth && navigator.bluetooth.requestLEScan
+        ? navigator.bluetooth.requestLEScan({ acceptAllAdvertisements: true }).catch((e) => ({ error: e })) : Promise.resolve({ error: new Error('unsupported') });
+      $('b').disabled = true; $('msg').textContent = '準備しています';
+      if ((await perm) === 'granted') window.addEventListener('deviceorientation', onOrient);
+      const s = await scan;
+      if (s && s.error) {
+        $('b').disabled = false;
+        status('error', 'このスマホでは使えません<br>会場のスマホをお使いください');
+        $('pos').textContent = '（スタッフ向け）Android の Chrome で chrome://flags の「Experimental Web Platform features」を有効にし、https のページで開いてください。' + s.error.message;
+        return;
+      }
+      navigator.bluetooth.addEventListener('advertisementreceived', (ev) => {
+        const k = keyOf(ev); if (!k || typeof ev.rssi !== 'number') return;
+        const v = seen.get(k);
+        seen.set(k, { ema: v && Date.now() - v.t < 3000 ? v.ema * 0.7 + ev.rssi * 0.3 : ev.rssi, t: Date.now() });
+      });
+      started = true; keepAwake();
+      $('b').hidden = true;
+      status('seek', '絵に近づいてください');
+      setInterval(() => {
+        tick();
+        if (setupMode()) { refresh(); $('seen').innerHTML = [...seen.entries()].filter(([, v]) => Date.now() - v.t < 5000).sort((a, b) => b[1].ema - a[1].ema).slice(0, 10)
+          .map(([k, v]) => `<tr><td>${Exhibit.esc(k)}</td><td>${Math.round(v.ema)} dBm</td><td>${map[k] ? Exhibit.esc((wOf(map[k]) || {}).title || '') : ''}</td></tr>`).join(''); }
+      }, 250);
+    });
+    // ガイドは、ボタンを押したときだけ流す（もう一度押すと止まる）
+    const PLAY = '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 5.5v13l11-6.5z"/></svg>', STOP = '<svg viewBox="0 0 24 24" fill="currentColor"><rect x="7" y="7" width="10" height="10" rx="1"/></svg>';
+    const gbtn = () => { $('g').innerHTML = guide.paused ? PLAY : STOP; $('g').dataset.on = guide.paused ? '' : '1'; };
+    $('g').addEventListener('click', () => { if (!guide.src) return; if (guide.paused) { if (guide.ended) guide.currentTime = 0; guide.play().catch(() => { }); record('guide'); } else guide.pause(); });
+    ['play', 'pause', 'ended'].forEach((ev) => guide.addEventListener(ev, gbtn));
   });
 </script>
 </body>

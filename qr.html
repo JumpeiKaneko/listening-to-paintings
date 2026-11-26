@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>絵画を聴く QRコード</title>
+<link rel="stylesheet" href="style.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcode-generator/1.4.4/qrcode.min.js"></script>
+</head>
+<body>
+<div class="brand noprint">QRコード<span class="muted">このページを印刷して、絵の横に貼ります</span></div>
+<p id="msg" class="card small muted noprint"></p>
+<div class="qr-grid" id="grid"></div>
+<script src="exhibit.js"></script>
+<script>
+  Exhibit.load().then((d) => {
+    const base = (d.base || '').replace(/\/?$/, '/');
+    document.getElementById('msg').textContent = d.base ? 'URL：' + base + 'play.html?w=…' : '公開するURLが入っていません。制作ソフトの「展示」で入れて、もう一度ページを作ってください。';
+    document.getElementById('grid').innerHTML = d.works.map((w) => {
+      const url = base + 'play.html?w=' + encodeURIComponent(w.id);
+      const q = qrcode(0, 'M'); q.addData(url); q.make();
+      return `<div class="card">${q.createSvgTag({ cellSize: 4, margin: 2, scalable: true })}<p>${Exhibit.esc(w.artist)}<br>《${Exhibit.esc(w.title)}》</p></div>`;
+    }).join('');
+  });
+</script>
+</body>
+</html>
