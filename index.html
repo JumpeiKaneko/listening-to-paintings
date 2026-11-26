@@ -11,14 +11,25 @@
     background: rgba(255,255,255,.06); color: rgba(255,255,255,.42); border: 1px solid rgba(255,255,255,.12);
     border-radius: 999px; padding: 4px 10px; font: inherit; font-size: 11px; letter-spacing: .08em; cursor: pointer; }
   .test-corner.on { background: #2B5282; color: #fff; border-color: #2B5282; opacity: 1; }
-  .test-panel { position: fixed; left: 12px; right: 12px; bottom: calc(44px + env(safe-area-inset-bottom)); z-index: 29;
-    background: rgba(22,22,24,.96); border: 1px solid rgba(255,255,255,.16); border-radius: 14px; padding: 12px 14px; font-size: 12px; }
-  .test-panel .t-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 8px; }
-  .test-panel .t-now { color: #fff; font-weight: 500; }
-  .test-panel .t-btns { display: flex; flex-wrap: wrap; gap: 6px; }
-  .test-panel .t-btn { flex: 1 1 30%; background: rgba(255,255,255,.08); color: #F2F2F0; border: 1px solid rgba(255,255,255,.14);
-    border-radius: 999px; padding: 7px 8px; font: inherit; font-size: 12px; cursor: pointer; text-align: center; }
-  .test-panel .t-btn.on { background: #2B5282; border-color: #2B5282; color: #fff; }
+  .test-panel { position: fixed; left: 10px; right: 10px; bottom: calc(44px + env(safe-area-inset-bottom)); z-index: 29;
+    background: rgba(20,20,22,.97); border: 1px solid rgba(255,255,255,.18); border-radius: 16px; padding: 12px 14px;
+    font-size: 12px; max-height: 76svh; overflow-y: auto; }
+  .test-panel .t-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 6px; }
+  .test-panel .t-now { color: #fff; font-weight: 500; font-size: 12.5px; }
+  .test-panel .t-meta { color: #B4B4B0; font-size: 11px; margin-bottom: 10px; line-height: 1.5; font-family: 'Outfit', sans-serif; }
+  .test-panel .t-btns { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; margin-bottom: 12px; }
+  .test-panel .t-btn { background: rgba(255,255,255,.08); color: #F2F2F0; border: 1px solid rgba(255,255,255,.14);
+    border-radius: 10px; padding: 7px 6px; font: inherit; font-size: 11.5px; cursor: pointer; text-align: center; line-height: 1.35; }
+  .test-panel .t-btn .t-db { display: block; font-size: 10.5px; color: #9E9E98; font-family: 'Outfit', sans-serif; margin-top: 2px; }
+  .test-panel .t-btn.on { background: #2B5282; border-color: #4E7BB3; color: #fff; }
+  .test-panel .t-btn.on .t-db { color: #DCE8F8; }
+  .test-panel .t-sl { display: flex; flex-direction: column; gap: 8px; border-top: 1px solid rgba(255,255,255,.12); padding-top: 10px; }
+  .test-panel .t-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .test-panel .t-row label { min-width: 92px; color: #D4D4D0; font-size: 11.5px; }
+  .test-panel .t-row input[type=range] { flex: 1; min-width: 110px; margin: 0; padding: 0; background: transparent; border: 0; accent-color: #5C8ED1; }
+  .test-panel .t-val { min-width: 54px; text-align: right; font-family: 'Outfit', sans-serif; color: #fff; font-size: 11.5px; }
+  .test-panel .t-mini { background: rgba(255,255,255,.12); color: #fff; border: 0; border-radius: 999px; padding: 4px 9px; font: inherit; font-size: 10.5px; cursor: pointer; white-space: nowrap; }
+  .test-panel .t-mini:active { background: #2B5282; }
 </style>
 </head>
 <body>
@@ -53,13 +64,38 @@
   <p style="text-align:center"><button class="link" id="toggle">設定</button></p>
 </main>
 
-<!-- 右下の控えめなデモテスト（ドレミファソラのサイン波でビーコン移り変わりを確認） -->
+<!-- 右下の控えめなデモテスト（ドレミファソラのサイン波＋距離dBm常時表示＋直感スライダー調整） -->
 <div class="test-panel" id="test-panel" hidden>
   <div class="t-head">
     <span class="t-now" id="test-now">テスト待機中（ビーコンを近づけるか下をタップ）</span>
-    <button type="button" class="sbtn" id="test-stop" style="padding:3px 10px;font-size:11px">音オフ</button>
+    <button type="button" class="t-mini" id="test-stop">音オフ</button>
   </div>
+  <div class="t-meta" id="test-meta">状態：待機　｜　最強ビーコン：なし　｜　向き 0°　奥 0.0m　｜　音：待機</div>
   <div class="t-btns" id="test-btns"></div>
+  <div class="t-sl">
+    <div class="t-row">
+      <label>近づく（鳴り始め）</label>
+      <input type="range" id="ts-near" min="-95" max="-35" step="1">
+      <span class="t-val" id="tv-near">-78 dBm</span>
+      <button type="button" class="t-mini" id="tb-near">今の距離</button>
+    </div>
+    <div class="t-row">
+      <label>止まる（はっきり）</label>
+      <input type="range" id="ts-stop" min="-85" max="-25" step="1">
+      <span class="t-val" id="tv-stop">-64 dBm</span>
+      <button type="button" class="t-mini" id="tb-stop">今の距離</button>
+    </div>
+    <div class="t-row">
+      <label>止まる判定の秒数</label>
+      <input type="range" id="ts-hold" min="0.5" max="4" step="0.5">
+      <span class="t-val" id="tv-hold">1.5 秒</span>
+    </div>
+    <div class="t-row">
+      <label>隣への切替余裕</label>
+      <input type="range" id="ts-hyst" min="0" max="10" step="1">
+      <span class="t-val" id="tv-hyst">+3 dBm</span>
+    </div>
+  </div>
 </div>
 <button type="button" class="test-corner" id="test-toggle">テスト</button>
 
@@ -106,7 +142,7 @@
     const works = d.works.filter((w) => w.files.work);
     let map = {};
     works.forEach((w) => { if (w.beacon && !Object.values(map).includes(w.id)) map[w.beacon] = w.id; });
-    const th = Object.assign({ near: -78, stop: -64, hold: 1.5 }, store.get('beaconTh', {}));
+    const th = Object.assign({ near: -78, stop: -64, hold: 1.5, hyst: 3 }, store.get('beaconTh', {}));
     const log = store.get('beaconLog', []);
     const seen = new Map();
     const engine = new Engine();
@@ -117,12 +153,27 @@
     let cur = null, state = null, stopSince = 0, leaveSince = 0, guided = false;
     let entering = null;
     const setupMode = () => !$('setup').hidden;
+    const wOf = (id) => works.find((w) => w.id === id);
+    const condOf = (id) => Exhibit.condition(d, d.works.findIndex((w) => w.id === id));
 
-    // ---- 右下テストモード（ドレミファソラのサイン音で移り変わりを即確認） ----
-    let testMode = false, testOsc = null, testGain = null, testCurId = null;
+    // ---- しきい値UI同期（設定画面とテストパネルの両方を連動保存） ----
+    function syncThUI() {
+      $('th-near').value = th.near; $('th-stop').value = th.stop; $('th-hold').value = th.hold;
+      $('ts-near').value = th.near; $('tv-near').textContent = th.near + ' dBm';
+      $('ts-stop').value = th.stop; $('tv-stop').textContent = th.stop + ' dBm';
+      $('ts-hold').value = th.hold; $('tv-hold').textContent = th.hold + ' 秒';
+      $('ts-hyst').value = th.hyst; $('tv-hyst').textContent = '+' + th.hyst + ' dBm';
+    }
+    syncThUI();
+    function setTh(k, v) { th[k] = Number(v); store.set('beaconTh', th); syncThUI(); }
+    ['near', 'stop', 'hold'].forEach((k) => $('th-' + k).addEventListener('change', (e) => setTh(k, e.target.value)));
+    ['near', 'stop', 'hold', 'hyst'].forEach((k) => $('ts-' + k).addEventListener('input', (e) => setTh(k, e.target.value)));
+
+    // ---- 右下テストモード（ドレミファソラのサイン音＋距離・dBm常時表示＋直感調整） ----
+    let testMode = false, testOsc = null, testGain = null, testActiveId = null;
     function ensureTestAudio() {
       const ctx = engine.ensure();
-      if (ctx.state === 'suspended') ctx.resume();
+      if (ctx.state !== 'running') ctx.resume().catch(() => { });
       if (!testOsc) {
         testOsc = ctx.createOscillator();
         testOsc.type = 'sine';
@@ -134,32 +185,66 @@
       }
       return ctx;
     }
+    function strongestMapped() {
+      const now = Date.now();
+      let best = null;
+      for (const [k, v] of seen) if (map[k] && now - v.t < 4000 && (!best || v.ema > best.ema)) best = { id: map[k], key: k, ema: v.ema };
+      return best;
+    }
+    function updateTestDisplay() {
+      if (!testMode) return;
+      const now = Date.now();
+      const stNames = { walk: '歩く（無音）', near: '近づく（弱）', stop: '止まる（強）', leave: '離れる（減衰）' };
+      const best = strongestMapped();
+      const bestW = best ? wOf(best.id) : null;
+      const bestTxt = best && bestW ? `${bestW.beaconLabel || ''} ${Math.round(best.ema)}dBm` : (started ? '受信なし' : '未開始（「はじめる」を押す）');
+      const ctxState = engine.ctx ? engine.ctx.state : '未起動';
+      $('test-meta').textContent = `状態：${stNames[state] || '待機'}　｜　最強：${bestTxt}　｜　向き ${Math.round(heading)}°　奥 ${listener.z.toFixed(1)}m　｜　音：${ctxState}`;
+      [...$('test-btns').children].forEach((btn) => {
+        const w = wOf(btn.dataset.id);
+        const v = w && w.beacon && seen.get(w.beacon);
+        const db = v && now - v.t < 4000 ? Math.round(v.ema) + ' dBm' : '--';
+        const span = btn.querySelector('.t-db');
+        if (span) span.textContent = db;
+        btn.classList.toggle('on', btn.dataset.id === testActiveId);
+      });
+    }
     function playTestTone(id, st, rssi) {
       const idx = works.findIndex((w) => w.id === id);
       if (idx < 0) return;
       const sc = SCALE[idx % SCALE.length];
       const w = works[idx];
       const ctx = ensureTestAudio();
-      const t = ctx.currentTime;
-      const vol = st === 'stop' ? 0.16 : st === 'near' ? 0.09 : st === 'leave' ? 0.03 : 0;
-      testOsc.frequency.setTargetAtTime(sc.freq, t, 0.08);
-      testGain.gain.setTargetAtTime(vol, t, 0.08);
-      testCurId = id;
-      const lbl = w.beaconLabel ? w.beaconLabel + ' ' : '';
-      const stName = { walk: '歩く', near: '近づく', stop: '止まる', leave: '離れる' }[st] || st;
-      $('test-now').textContent = `テスト：${lbl}${sc.note}（${Math.round(sc.freq)}Hz）｜${stName}${rssi != null ? ' ' + Math.round(rssi) + 'dBm' : ''}`;
-      [...$('test-btns').children].forEach((btn) => btn.classList.toggle('on', btn.dataset.id === id && vol > 0));
+      const apply = () => {
+        const t = ctx.currentTime;
+        const vol = st === 'stop' ? 0.45 : st === 'near' ? 0.28 : st === 'leave' ? 0.12 : 0;
+        testOsc.frequency.cancelScheduledValues(t);
+        testGain.gain.cancelScheduledValues(t);
+        testOsc.frequency.setValueAtTime(sc.freq, t);
+        testGain.gain.setTargetAtTime(vol, t, 0.04);
+        testActiveId = vol > 0 ? id : null;
+        const lbl = w.beaconLabel ? w.beaconLabel + ' ' : '';
+        const stName = { walk: '歩く', near: '近づく', stop: '止まる', leave: '離れる' }[st] || st;
+        $('test-now').textContent = `${lbl}${sc.note}（${Math.round(sc.freq)}Hz）｜${stName}${rssi != null ? ' ' + Math.round(rssi) + ' dBm' : ''}`;
+        updateTestDisplay();
+      };
+      if (ctx.state !== 'running') ctx.resume().then(apply).catch(apply);
+      else apply();
     }
     function muteTestTone() {
-      if (testGain && engine.ctx) testGain.gain.setTargetAtTime(0, engine.ctx.currentTime, 0.06);
-      testCurId = null;
+      if (testGain && engine.ctx) {
+        const t = engine.ctx.currentTime;
+        testGain.gain.cancelScheduledValues(t);
+        testGain.gain.setTargetAtTime(0, t, 0.04);
+      }
+      testActiveId = null;
       $('test-now').textContent = 'テスト待機中（ビーコンを近づけるか下をタップ）';
-      [...$('test-btns').children].forEach((btn) => btn.classList.remove('on'));
+      updateTestDisplay();
     }
     $('test-btns').innerHTML = works.map((w, idx) => {
       const sc = SCALE[idx % SCALE.length];
       const lbl = w.beaconLabel || String(idx + 1);
-      return `<button type="button" class="t-btn" data-id="${Exhibit.esc(w.id)}">${Exhibit.esc(lbl)} ${sc.note}</button>`;
+      return `<button type="button" class="t-btn" data-id="${Exhibit.esc(w.id)}">${Exhibit.esc(lbl)} ${sc.note}<span class="t-db">--</span></button>`;
     }).join('');
     $('test-btns').addEventListener('click', (e) => {
       const btn = e.target.closest('[data-id]'); if (!btn) return;
@@ -168,6 +253,17 @@
       playTestTone(id, 'stop', null);
     });
     $('test-stop').addEventListener('click', muteTestTone);
+    $('tb-near').addEventListener('click', () => {
+      const b = strongestMapped(); if (!b) { $('test-now').textContent = '先に「はじめる」を押してビーコンを受信してください'; return; }
+      setTh('near', Math.round(b.ema));
+      $('test-now').textContent = `「近づく」を今の距離（${Math.round(b.ema)} dBm）にしました`;
+    });
+    $('tb-stop').addEventListener('click', () => {
+      const b = strongestMapped(); if (!b) { $('test-now').textContent = '先に「はじめる」を押してビーコンを受信してください'; return; }
+      const v = Math.round(b.ema) - 3;
+      setTh('stop', v);
+      $('test-now').textContent = `「止まる」を今の距離-3（${v} dBm）にしました`;
+    });
     $('test-toggle').addEventListener('click', () => {
       testMode = !testMode;
       $('test-toggle').classList.toggle('on', testMode);
@@ -176,6 +272,7 @@
         engine.stop(); guide.pause();
         ensureTestAudio();
         if (cur) playTestTone(cur, state || 'near', null);
+        updateTestDisplay();
       } else {
         muteTestTone();
         cur = null; state = null;
@@ -185,8 +282,6 @@
     // ---- 設定の画面 ----
     $('toggle').addEventListener('click', (e) => { e.preventDefault(); $('setup').hidden = !$('setup').hidden; });
     if (new URLSearchParams(location.search).has('setup')) $('setup').hidden = false;
-    $('th-near').value = th.near; $('th-stop').value = th.stop; $('th-hold').value = th.hold;
-    ['near', 'stop', 'hold'].forEach((k) => $('th-' + k).addEventListener('change', (e) => { th[k] = Number(e.target.value); store.set('beaconTh', th); }));
     function renderMap() {
       $('map').innerHTML = '<tr><th>絵</th><th>ビーコン</th><th></th></tr>' + works.map((w) => {
         const k = Object.keys(map).find((b) => map[b] === w.id) || '（なし）';
@@ -202,8 +297,6 @@
     $('clear').addEventListener('click', () => { if (confirm('記録を消しますか？')) { log.length = 0; store.set('beaconLog', log); } });
 
     // ---- 音 ----
-    const wOf = (id) => works.find((w) => w.id === id);
-    const condOf = (id) => Exhibit.condition(d, d.works.findIndex((w) => w.id === id));
     async function load(id) {
       if (loaded.has(id)) return loaded.get(id);
       const w = wOf(id);
@@ -258,20 +351,28 @@
     }
     guide.addEventListener('play', render); guide.addEventListener('ended', render); guide.addEventListener('pause', render);
 
-    // 0.25秒ごとに、いちばん近い絵と状態を決める
+    // 0.25秒ごとに、いちばん近い絵と状態を決める（隣とのパタパタ防止ヒステリシス付き）
     function tick() {
       const now = Date.now();
       let best = null;
       for (const [k, v] of seen) if (map[k] && now - v.t < 3000 && v.ema > th.near && (!best || v.ema > best.ema)) best = { id: map[k], ema: v.ema };
       if (entering) return;
-      if (best && best.id !== cur) { entering = best.id; enter(best.id, best.ema).catch(() => { status('error', '音を読み込めませんでした'); }).finally(() => { entering = null; }); return; }
-      if (!cur) { status('seek', '絵に近づいてください'); return; }
-      const k = Object.keys(map).find((b) => map[b] === cur);
-      const v = k && seen.get(k);
-      const e = v && now - v.t < 3000 ? v.ema : -120;
-      if (e > th.stop) { leaveSince = 0; if (!stopSince) stopSince = now; setState(now - stopSince >= th.hold * 1000 ? 'stop' : 'near', e); }
-      else if (e > th.near) { stopSince = 0; leaveSince = 0; setState('near', e); }
-      else { stopSince = 0; if (!leaveSince) leaveSince = now; setState(now - leaveSince > 5000 ? 'walk' : 'leave', e); }
+      const curKey = cur ? Object.keys(map).find((b) => map[b] === cur) : null;
+      const curV = curKey && seen.get(curKey);
+      const curE = curV && now - curV.t < 3000 ? curV.ema : -120;
+      if (best && best.id !== cur) {
+        // すでに鳴っている絵が範囲内のときは、切替余裕（th.hyst dBm）以上強いときだけ切り替える
+        if (!cur || curE <= th.near || best.ema >= curE + (Number(th.hyst) || 0)) {
+          entering = best.id;
+          enter(best.id, best.ema).catch(() => { status('error', '音を読み込めませんでした'); }).finally(() => { entering = null; });
+          return;
+        }
+      }
+      if (!cur) { status('seek', '絵に近づいてください'); updateTestDisplay(); return; }
+      if (curE > th.stop) { leaveSince = 0; if (!stopSince) stopSince = now; setState(now - stopSince >= th.hold * 1000 ? 'stop' : 'near', curE); }
+      else if (curE > th.near) { stopSince = 0; leaveSince = 0; setState('near', curE); }
+      else { stopSince = 0; if (!leaveSince) leaveSince = now; setState(now - leaveSince > 5000 ? 'walk' : 'leave', curE); }
+      updateTestDisplay();
     }
 
     // ---- 向きのセンサー ----
@@ -283,6 +384,7 @@
         const work = cur && loaded.get(cur);
         if (work && engine.playing) engine.update(work, opt());
         if (setupMode()) { const names = { walk: '歩く', near: '近づく', stop: '止まる', leave: '離れる' }; $('pos').textContent = `${names[state] || '—'}　向き ${Math.round(heading)}°　左右 ${Math.round((listener.x - 0.5) * 200)}%　奥へ ${listener.z.toFixed(1)} m`; }
+        if (testMode) updateTestDisplay();
       });
     }
     function onOrient(e) {
