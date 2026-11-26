@@ -1,0 +1,95 @@
+{
+  "base": "https://jumpeikaneko.github.io/listening-to-paintings/",
+  "conditions": [
+    "picture",
+    "guide",
+    "all"
+  ],
+  "works": [
+    {
+      "id": "monet-beach-sainte-adresse-1867",
+      "title": "サント＝アドレスの浜辺",
+      "artist": "クロード・モネ",
+      "year": "1867",
+      "collection": "シカゴ美術館",
+      "url": "https://www.artic.edu/artworks/14598",
+      "beacon": "iBeacon 9-48399",
+      "files": {
+        "image": "works/monet-beach-sainte-adresse-1867/image.jpg",
+        "work": "works/monet-beach-sainte-adresse-1867/work.json"
+      },
+      "beaconLabel": "A"
+    },
+    {
+      "id": "pissarro-boulevard-montmartre-winter-1897",
+      "title": "モンマルトル大通り、冬の朝",
+      "artist": "カミーユ・ピサロ",
+      "year": "1897",
+      "collection": "メトロポリタン美術館",
+      "url": "https://www.metmuseum.org/art/collection/search/437310",
+      "beacon": "iBeacon 9-50449",
+      "files": {
+        "image": "works/pissarro-boulevard-montmartre-winter-1897/image.jpg",
+        "work": "works/pissarro-boulevard-montmartre-winter-1897/work.json"
+      },
+      "beaconLabel": "B"
+    },
+    {
+      "id": "monet-gare-saint-lazare-1877",
+      "title": "ノルマンディー線の列車の到着、サン＝ラザール駅",
+      "artist": "クロード・モネ",
+      "year": "1877",
+      "collection": "シカゴ美術館",
+      "url": "https://www.artic.edu/artworks/16571",
+      "beacon": "iBeacon 9-48394",
+      "files": {
+        "image": "works/monet-gare-saint-lazare-1877/image.jpeg",
+        "work": "works/monet-gare-saint-lazare-1877/work.json"
+      },
+      "beaconLabel": "C"
+    },
+    {
+      "id": "monet-stacks-of-wheat-1890",
+      "title": "積みわら（夏の終わり）",
+      "artist": "クロード・モネ",
+      "year": "1890–91",
+      "collection": "シカゴ美術館",
+      "url": "https://www.artic.edu/artworks/64818",
+      "beacon": "iBeacon 9-48409",
+      "files": {
+        "image": "works/monet-stacks-of-wheat-1890/image.jpg",
+        "work": "works/monet-stacks-of-wheat-1890/work.json"
+      },
+      "beaconLabel": "D"
+    },
+    {
+      "id": "degas-dance-class-1874",
+      "title": "ダンス教室",
+      "artist": "エドガー・ドガ",
+      "year": "1874",
+      "collection": "メトロポリタン美術館",
+      "url": "https://www.metmuseum.org/art/collection/search/438817",
+      "beacon": "iBeacon 9-50448",
+      "files": {
+        "image": "works/degas-dance-class-1874/image.jpg",
+        "work": "works/degas-dance-class-1874/work.json"
+      },
+      "beaconLabel": "F"
+    },
+    {
+      "id": "caillebotte-paris-street-rainy-day-1877",
+      "title": "パリの通り、雨",
+      "artist": "ギュスターヴ・カイユボット",
+      "year": "1877",
+      "collection": "シカゴ美術館",
+      "url": "https://www.artic.edu/artworks/20684",
+      "beacon": "iBeacon 9-48232",
+      "files": {
+        "image": "works/caillebotte-paris-street-rainy-day-1877/image.jpg",
+        "work": "works/caillebotte-paris-street-rainy-day-1877/work.json"
+      },
+      "beaconLabel": "G"
+    }
+  ],
+  "built": "2026-11-26T21:40:22.822Z"
+}
