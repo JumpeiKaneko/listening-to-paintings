@@ -5,8 +5,18 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="theme-color" content="#111111">
 <title>絵画を聴く</title>
-<link rel="stylesheet" href="style.css">
+<link rel="stylesheet" href="style.css?v=4">
 <style>
+  .ctl { align-items: center !important; }
+  .play { margin: 0 auto; }
+  .play[data-on="1"] svg { margin-left: 0; }
+  .rounds { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; width: 100%; max-width: 300px; margin: 0 auto; }
+  .r-btn { background: rgba(255,255,255,.10); color: rgba(242,242,240,.78); border: 0; border-radius: 10px; padding: 11px 8px; font: inherit; font-size: 13px; letter-spacing: .06em; cursor: pointer; transition: background .2s, color .2s; }
+  .r-btn.on { background: #F2F2F0; color: #111111; }
+  .r-sub { margin: -12px 0 0; font-size: 12px; color: #8E8E8A; letter-spacing: .06em; }
+  .bar-rounds { display: inline-flex; gap: 4px; pointer-events: auto; }
+  .bar-rounds .r-mini { background: transparent; color: rgba(242,242,240,.46); border: 0; border-radius: 6px; padding: 4px 8px; font: inherit; font-size: 11px; letter-spacing: .04em; cursor: pointer; }
+  .bar-rounds .r-mini.on { background: rgba(242,242,240,.16); color: #F2F2F0; }
   .test-corner { position: fixed; right: 14px; bottom: max(14px, env(safe-area-inset-bottom)); z-index: 30;
     background: transparent; color: rgba(242,242,240,.32); border: 0;
     border-radius: 6px; padding: 4px 8px; font: inherit; font-size: 11px; letter-spacing: .06em; cursor: pointer; }
@@ -34,10 +44,23 @@
 </head>
 <body>
 <div class="backdrop" id="backdrop" aria-hidden="true"></div>
-<div class="bar"><span class="brand" id="brand">絵画を聴く</span></div>
+<div class="bar">
+  <span class="brand" id="brand">絵画を聴く</span>
+  <div class="bar-rounds" id="bar-rounds" hidden>
+    <button type="button" class="r-mini" data-round="1">1回目</button>
+    <button type="button" class="r-mini" data-round="2">2回目</button>
+    <button type="button" class="r-mini" data-round="3">3回目</button>
+  </div>
+</div>
 <main class="stage">
   <!-- はじめる前／探しているあいだ -->
   <section class="seek" id="seek">
+    <div class="rounds" id="start-rounds">
+      <button type="button" class="r-btn" data-round="1">1回目</button>
+      <button type="button" class="r-btn" data-round="2">2回目</button>
+      <button type="button" class="r-btn" data-round="3">3回目</button>
+    </div>
+    <p class="r-sub" id="r-sub">1回目：絵のみ</p>
     <div class="radar" id="radar" hidden><i></i></div>
     <button id="b" class="play" aria-label="はじめる"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 5.5v13l11-6.5z"/></svg></button>
     <p class="msg" id="msg" role="status" aria-live="polite">イヤホンをつけて、はじめる</p>
@@ -217,9 +240,20 @@
     let started = false, prox = 0;
     let cur = null, state = null, stopSince = 0, leaveSince = 0;
     let candId = null, candCount = 0;
+    let round = 1;
+    const ROUND_COND = { 1: 'picture', 2: 'guide', 3: 'all' };
+    const ROUND_DESC = { 1: '1回目：絵のみ', 2: '2回目：ガイドのみ', 3: '3回目：ガイドと音' };
     const setupMode = () => !$('setup').hidden;
     const wOf = (id) => works.find((w) => w.id === id);
-    const condOf = (id) => Exhibit.condition(d, d.works.findIndex((w) => w.id === id));
+    const condOf = () => ROUND_COND[round] || 'all';
+    function setRound(r) {
+      round = Number(r) || 1;
+      document.querySelectorAll('[data-round]').forEach((el) => el.classList.toggle('on', Number(el.dataset.round) === round));
+      $('r-sub').textContent = ROUND_DESC[round] || '';
+      if (cur && !testMode) enter(cur, null);
+    }
+    document.querySelectorAll('[data-round]').forEach((el) => el.addEventListener('click', () => setRound(el.dataset.round)));
+    setRound(1);
 
     function bgTarget() {
       if (!cur || testMode) return 0;
@@ -591,6 +625,9 @@
       });
       started = true; keepAwake();
       $('b').hidden = true;
+      $('start-rounds').hidden = true;
+      $('r-sub').hidden = true;
+      $('bar-rounds').hidden = false;
       $('brand').classList.add('live');
       status('seek', '絵に近づいてください');
       setInterval(() => {
