@@ -382,17 +382,17 @@
     function tick() {
       const now = Date.now();
       let best = null;
-      for (const [k, v] of seen) if (map[k] && now - v.t < 3000 && v.ema > th.near && (!best || v.ema > best.ema)) best = { id: map[k], ema: v.ema };
+      for (const [k, v] of seen) if (map[k] && now - v.t < 3000 && v.ema > Math.min(th.near, -88) && (!best || v.ema > best.ema)) best = { id: map[k], ema: v.ema };
       if (entering) return;
       const curKey = cur ? Object.keys(map).find((b) => map[b] === cur) : null;
       const curV = curKey && seen.get(curKey);
       const curE = curV && now - curV.t < 3000 ? curV.ema : -120;
       if (best && best.id !== cur) {
-        if (!cur || curE <= th.near || best.ema >= curE + Math.max(6, Number(th.hyst) || 0)) {
+        if (!cur || curE <= th.near || best.ema >= curE + 3) {
           candCount = candId === best.id ? candCount + 1 : 1;
           candId = best.id;
           // 0.5秒（2回連続）同じ候補が勝ったときだけ切り替えて誤反応を防ぐ
-          if (!cur || candCount >= 12) {
+          if (!cur || candCount >= 5) {
             candId = null; candCount = 0; entering = best.id;
             enter(best.id, best.ema).catch(() => { status('error', '音を読み込めませんでした'); }).finally(() => { entering = null; });
             return;
