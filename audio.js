@@ -231,7 +231,7 @@
         off: -6 + 6 * pr + leaveFade
       };
     }
-    LAYERS.forEach((k) => set(g.layers[k].gain, dB(st[k])));
+    LAYERS.forEach((k) => set(g.layers[k].gain, dB(st[k] + (Number((work.mix || {})[k]) || 0)))); // ミックス：層ごとの音量（オフで決める）
     set(g.wet.gain, e.reverb * 0.28 * soundBase * m.sound * dB(st.off));
 
     const L = ctx.listener, h = (Number(opt.heading) || 0) * 1.5 * Math.PI / 180;
