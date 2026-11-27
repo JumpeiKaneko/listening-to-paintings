@@ -142,12 +142,25 @@
   Exhibit.load().then(async (d) => {
     const works = d.works.filter((w) => w.files.work);
     let map = {};
-    works.forEach((w) => { if (w.beacon && !Object.values(map).includes(w.id)) map[w.beacon] = w.id; });
-    // 制作ソフトに登録済みのビーコン（スマホに登録がなくても反応するように）
-    const DEFAULT_BEACONS = { 'iBeacon 9-48399': 'monet-beach-sainte-adresse-1867', 'iBeacon 9-50449': 'pissarro-boulevard-montmartre-winter-1897', 'iBeacon 9-48394': 'monet-gare-saint-lazare-1877', 'iBeacon 9-48409': 'monet-stacks-of-wheat-1890', 'iBeacon 9-50448': 'degas-dance-class-1874', 'iBeacon 9-48232': 'caillebotte-paris-street-rainy-day-1877' };
-    Object.entries(DEFAULT_BEACONS).forEach(([k, id]) => { if (!map[k] && !Object.values(map).includes(id)) map[k] = id; });
-    const th = { near: -75, stop: -55, hold: 1.5, hyst: 8 }; // 固定（スマホに保存された値は使わない）
-    const SWITCH = -50, LEAD = 8; // 切り替え：いちばん強いビーコンが-50dBmより強く、2番目より8dB以上強いとき
+    // KBPro のデバイス名（名前 KBPro_000, B〜G）と iBeacon 番号の両方で反応するように登録
+    const DEFAULT_BEACONS = {
+      '名前 KBPro_000': 'monet-beach-sainte-adresse-1867',
+      '名前 KBPro_B': 'pissarro-boulevard-montmartre-winter-1897',
+      '名前 KBPro_C': 'monet-gare-saint-lazare-1877',
+      '名前 KBPro_D': 'monet-stacks-of-wheat-1890',
+      '名前 KBPro_F': 'degas-dance-class-1874',
+      '名前 KBPro_G': 'caillebotte-paris-street-rainy-day-1877',
+      'iBeacon 9-48399': 'monet-beach-sainte-adresse-1867',
+      'iBeacon 9-50449': 'pissarro-boulevard-montmartre-winter-1897',
+      'iBeacon 9-48394': 'monet-gare-saint-lazare-1877',
+      'iBeacon 9-48409': 'monet-stacks-of-wheat-1890',
+      'iBeacon 9-50448': 'degas-dance-class-1874',
+      'iBeacon 9-48232': 'caillebotte-paris-street-rainy-day-1877'
+    };
+    Object.entries(DEFAULT_BEACONS).forEach(([k, id]) => { map[k] = id; });
+    works.forEach((w) => { if (w.beacon && !map[w.beacon]) map[w.beacon] = w.id; });
+    const rssiOf = (id, now, maxAge) => { let best = null; for (const [k, v] of seen) if (map[k] === id && now - v.t < maxAge && (best === null || v.ema > best)) best = v.ema; return best; };
+    const th = Object.assign({ near: -65, stop: -55, hold: 1.5, hyst: 3 }, store.get('beaconTh', {}));
     const log = store.get('beaconLog', []);
     const seen = new Map();
     // MP3版：聴く位置3段階（画家の位置／中景／絵の中）のMP3を同時にループし、ビーコンの強さでクロスフェードする
@@ -285,9 +298,8 @@
       const ctxState = engine.ctx ? engine.ctx.state : '未起動';
       $('test-meta').textContent = `状態：${stNames[state] || '待機'}　｜　最強：${bestTxt}　｜　接近 ${Math.round(prox * 100)}%　向き ${Math.round(heading)}°　奥 ${listener.z.toFixed(1)}m　｜　音：${ctxState}`;
       [...$('test-btns').children].forEach((btn) => {
-        const w = wOf(btn.dataset.id);
-        const v = w && w.beacon && seen.get(w.beacon);
-        const db = v && now - v.t < 4000 ? Math.round(v.ema) + ' dBm' : '--';
+        const ema = rssiOf(btn.dataset.id, now, 4000);
+        const db = ema !== null ? Math.round(ema) + ' dBm' : '--';
         const span = btn.querySelector('.t-db');
         if (span) span.textContent = db;
         btn.classList.toggle('on', btn.dataset.id === testActiveId);
@@ -368,7 +380,8 @@
     if (new URLSearchParams(location.search).has('setup')) $('setup').hidden = false;
     function renderMap() {
       $('map').innerHTML = '<tr><th>絵</th><th>ビーコン</th><th></th></tr>' + works.map((w) => {
-        const k = Object.keys(map).find((b) => map[b] === w.id) || '（なし）';
+        const ks = Object.keys(map).filter((b) => map[b] === w.id);
+        const k = ks.find((b) => b.startsWith('名前 ')) || ks[0] || '（なし）';
         const tag = w.beaconLabel ? `[${w.beaconLabel}] ` : '';
         return `<tr><td>${Exhibit.esc(tag + w.title)}</td><td>${Exhibit.esc(k)}</td><td></td></tr>`;
       }).join('');
@@ -446,19 +459,11 @@
     function tick() {
       const now = Date.now();
       let best = null;
-      let second = -120;
-      for (const [k, v] of seen) {
-        if (!map[k] || now - v.t >= 3000) continue;
-        if (!best || v.ema > best.ema) { if (best) second = Math.max(second, best.ema); best = { id: map[k], ema: v.ema }; }
-        else second = Math.max(second, v.ema);
-      }
-      if (best && (best.ema <= SWITCH || best.ema < second + LEAD)) best = cur ? { id: cur, ema: best.ema } : null;
+      for (const [k, v] of seen) if (map[k] && now - v.t < 3000 && v.ema > th.near && (!best || v.ema > best.ema)) best = { id: map[k], ema: v.ema };
       if (entering) return;
-      const curKey = cur ? Object.keys(map).find((b) => map[b] === cur) : null;
-      const curV = curKey && seen.get(curKey);
-      const curE = curV && now - curV.t < 3000 ? curV.ema : -120;
+      const curE = cur ? ((() => { const r = rssiOf(cur, now, 3000); return r !== null ? r : -120; })()) : -120;
       if (best && best.id !== cur) {
-        if (true) {
+        if (!cur || curE <= th.near || best.ema >= curE + (Number(th.hyst) || 0)) {
           candCount = candId === best.id ? candCount + 1 : 1;
           candId = best.id;
           // 0.5秒（2回連続）同じ候補が勝ったときだけ切り替えて誤反応を防ぐ
