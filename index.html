@@ -143,34 +143,94 @@
     const works = d.works.filter((w) => w.files.work);
     let map = {};
     works.forEach((w) => { if (w.beacon && !Object.values(map).includes(w.id)) map[w.beacon] = w.id; });
-    const th = Object.assign({ near: -78, stop: -64, hold: 1.5, hyst: 3 }, store.get('beaconTh', {}));
+    const th = { near: -75, stop: -55, hold: 1.5, hyst: 8 }; // 固定（スマホに保存された値は使わない）
+    const SWITCH = -50, LEAD = 8; // 切り替え：いちばん強いビーコンが-50dBmより強く、2番目より8dB以上強いとき
     const log = store.get('beaconLog', []);
     const seen = new Map();
-    // MP3版：書き出した音（mp3/作品ID.mp3）をループで流す。向きや距離で音は変えない
+    // MP3版：聴く位置3段階（画家の位置／中景／絵の中）のMP3を同時にループし、ビーコンの強さでクロスフェードする
     const AD = { 'monet-beach-sainte-adresse-1867': 1, 'pissarro-boulevard-montmartre-winter-1897': 2, 'monet-gare-saint-lazare-1877': 3, 'monet-stacks-of-wheat-1890': 4, 'degas-dance-class-1874': 5, 'caillebotte-paris-street-rainy-day-1877': 6 };
     const engine = (() => {
-      const A = new Audio(), B = new Audio(); A.loop = B.loop = true; A.preload = B.preload = 'auto';
-      let bg = A, target = -1;
-      const ramp = (a, to, ms, done) => { const from = a.volume, t0 = performance.now(); clearInterval(a._r); a._r = setInterval(() => { const k = Math.min(1, (performance.now() - t0) / ms); a.volume = Math.max(0, Math.min(1, from + (to - from) * k)); if (k >= 1) { clearInterval(a._r); if (done) done(); } }, 50); };
-      const level = (o) => (o && o.cond === 'guide') ? 0 : (o && o.cond === 'all') ? 0.3 : 0.9;
-      return {
-        ctx: null, playing: false, A, B,
-        ensure() { if (!this.ctx) { const AC = window.AudioContext || window.webkitAudioContext; this.ctx = new AC(); } return this.ctx; },
-        load() { return Promise.resolve(); },
-        play(work, o) {
-          const old = bg, next = bg === A ? B : A;
-          next.src = work.mp3; next.volume = 0; next.currentTime = 0; next.play().catch(() => { });
-          target = level(o); ramp(next, target, 2000); ramp(old, 0, 2000, () => old.pause());
-          bg = next; this.playing = true;
+      // 背景（画面外の音を書き出したMP3）を流し、絵の中の物の音は、スマホを向けた方向のものほど大きく聞こえるようにする
+      const bufs = new Map();
+      let ctx = null, curSet = null, target = -1;
+      const dB = (v) => Math.pow(10, (Number(v) || 0) / 20);
+      const level = (o) => (o && o.cond === 'guide') ? 0 : (o && o.cond === 'all') ? 0.3 : 1;
+      const url = (f) => 'works/' + f.split('/').map(encodeURIComponent).join('/');
+      // 同じ音を少し重ねてクロスフェードしながら繰り返す（MP3の頭と終わりの無音でプチッと鳴らないように）
+      function xloop(c, buf, dest, t0, list) {
+        const a = Math.min(0.1, buf.duration * 0.05), b = buf.duration - a, L = b - a;
+        const X = Math.min(0.8, L / 4), step = L - X;
+        let k = 0, next = t0;
+        const one = (t, first) => {
+          const src = c.createBufferSource(); src.buffer = buf;
+          const g = c.createGain(); src.connect(g); g.connect(dest);
+          if (first) g.gain.setValueAtTime(1, t); else { g.gain.setValueAtTime(0, t); g.gain.linearRampToValueAtTime(1, t + X); }
+          g.gain.setValueAtTime(1, t + L - X); g.gain.linearRampToValueAtTime(0, t + L);
+          src.start(t, a, L); list.push(src);
+          src.onended = () => { const i = list.indexOf(src); if (i >= 0) list.splice(i, 1); try { g.disconnect(); } catch (e) { } };
+        };
+        const pump = () => { if (list.dead) return; while (next < c.currentTime + 4) { one(next, k === 0); k++; next += step; } };
+        pump(); list.timers.push(setInterval(pump, 1000));
+      }
+      const api = {
+        ctx: null, playing: false,
+        ensure() { if (!ctx) { const AC = window.AudioContext || window.webkitAudioContext; ctx = new AC({ latencyHint: 'playback' }); api.ctx = ctx; } return ctx; },
+        async load(id, work) {
+          if (bufs.has(id)) return bufs.get(id);
+          const c = api.ensure();
+          const dec = async (u) => { try { return await c.decodeAudioData(await (await fetch(u)).arrayBuffer()); } catch (e) { return null; } };
+          const objs = (work.sounds || []).filter((s) => s.pos && !s.mute);
+          const [bed, ...ob] = await Promise.all([dec('mp3/' + id + '_bed.mp3'), ...objs.map((s) => dec(url(s.file)))]);
+          const b = { bed, objs: objs.map((s, i) => ({ s, buf: ob[i] })).filter((x) => x.buf) };
+          bufs.set(id, b); [...bufs.keys()].forEach((k) => { if (k !== id && bufs.size > 2) bufs.delete(k); });
+          return b;
         },
-        update(work, o) { const v = level(o); if (v === target) return; target = v; ramp(bg, v, 800); },
-        stop() { const a = bg; target = -1; ramp(a, 0, 1500, () => a.pause()); this.playing = false; }
+        play(work, o) {
+          const c = api.ensure(), t = c.currentTime + 0.05, b = bufs.get(work.id);
+          if (!b) return;
+          const master = c.createGain(); master.gain.setValueAtTime(0, t);
+          const lim = c.createDynamicsCompressor(); lim.threshold.value = -6; lim.ratio.value = 8; lim.attack.value = 0.005; lim.release.value = 0.25;
+          master.connect(lim); lim.connect(c.destination);
+          const srcs = []; srcs.timers = [];
+          if (b.bed) { const src = c.createBufferSource(); src.buffer = b.bed; src.loop = true; src.connect(master); src.start(t); srcs.push(src); }
+          const scale = 0.9 / Math.sqrt(Math.max(1, b.objs.length));
+          const objs = b.objs.map(({ s, buf }) => {
+            const g = c.createGain(), pan = c.createStereoPanner();
+            g.connect(pan); pan.connect(master);
+            xloop(c, buf, g, t + Math.random() * 0.5, srcs);
+            const base = dB(s.gain) * Math.pow(Math.min(1, 8 / Math.max(1, Number(s.dist) || 8)), 0.6) * scale;
+            return { g, pan, base, az: (s.pos.x - 0.5) * 90 };
+          });
+          target = level(o); master.gain.linearRampToValueAtTime(target, t + 1);
+          api.stop(); curSet = { master, srcs, objs, h: null }; api.playing = true;
+          api.update(work, o, true);
+        },
+        update(work, o, force) {
+          if (!curSet) return; const t = ctx.currentTime;
+          const h = Number(o.heading) || 0;
+          if (force || curSet.h === null || Math.abs(h - curSet.h) > 2) {
+            curSet.h = h;
+            curSet.objs.forEach((x) => {
+              const rel = ((x.az - h + 540) % 360) - 180;
+              const w = Math.exp(-Math.pow(rel / 35, 2));
+              x.g.gain.cancelScheduledValues(t); x.g.gain.setTargetAtTime(x.base * (0.15 + 0.85 * w), t, 0.25);
+              x.pan.pan.cancelScheduledValues(t); x.pan.pan.setTargetAtTime(clamp(Math.sin(rel * Math.PI / 180), -1, 1) * 0.8, t, 0.25);
+            });
+          }
+          const v = level(o); if (v !== target) { target = v; curSet.master.gain.cancelScheduledValues(t); curSet.master.gain.setTargetAtTime(v, t, 0.25); }
+        },
+        stop() {
+          if (!curSet) return; const old = curSet, t = ctx.currentTime; curSet = null; api.playing = false;
+          old.master.gain.cancelScheduledValues(t); old.master.gain.setValueAtTime(old.master.gain.value, t); old.master.gain.linearRampToValueAtTime(0, t + 1);
+          setTimeout(() => { old.srcs.dead = true; old.srcs.timers.forEach(clearInterval); old.srcs.slice().forEach((x) => { try { x.stop(); } catch (e) { } }); old.master.disconnect(); }, 1200);
+        }
       };
+      return api;
     })();
     const listener = { x: 0.5, y: 1, z: 0 };
     const loaded = new Map();
     const guide = new Audio();
-    let heading = 0, zero = null, started = false, prox = 0;
+    let heading = 0, zero = null, started = false, prox = 0, tilt = 0;
     let cur = null, state = null, stopSince = 0, leaveSince = 0, guided = false;
     let entering = null, candId = null, candCount = 0;
     const setupMode = () => !$('setup').hidden;
@@ -323,7 +383,8 @@
       const w = wOf(id);
       const j = await (await fetch(w.files.work, { cache: 'no-store' })).json();
       const work = Object.assign({}, j, { sounds: (j.sounds || []).map((s) => Object.assign({}, s, { file: id + '/' + s.file })), guide: Object.assign({}, j.guide, { file: '' }) });
-      work.mp3 = 'mp3/' + id + '.mp3';
+      work.id = id;
+      await engine.load(id, work);
       work.guideUrl = AD[id] ? 'mp3/ad' + AD[id] + '.mp3' : '';
       const inDists = (work.sounds || []).filter((s) => s.pos && !s.mute).map((s) => Number(s.dist) || 10).sort((a, b) => a - b);
       const minD = inDists[0] || 5;
@@ -333,7 +394,7 @@
       loaded.set(id, work);
       return work;
     }
-    const opt = () => ({ listener, cond: cur && condOf(cur) === 'guide' ? 'guide' : (!guide.paused ? 'all' : 'sound'), mutes: {}, heading, state: state || 'walk', prox, loopGuide: false });
+    const opt = () => ({ listener, cond: cur && condOf(cur) === 'guide' ? 'guide' : (!guide.paused ? 'all' : 'sound'), mutes: {}, heading, state: state || 'walk', prox: tilt, loopGuide: false });
     function record(s) { log.push({ time: new Date().toISOString(), work: cur || '', state: s }); store.set('beaconLog', log); }
 
     function show(id) {
@@ -351,7 +412,7 @@
       if (condOf(id) === 'picture') { engine.stop(); guide.pause(); cur = id; state = 'near'; guided = true; show(id); status('near', 'この絵は、音なしでご覧ください'); record('near'); return; }
       status('seek', '読み込んでいます');
       const work = await load(id);
-      cur = id; state = 'near'; guided = false; stopSince = 0; leaveSince = 0; zero = null;
+      cur = id; state = 'near'; guided = false; stopSince = 0; leaveSince = 0; zero = null; tilt = 0;
       if (typeof rssi === 'number') prox = clamp((rssi - th.near) / Math.max(8, (th.stop + 8) - th.near), 0.15, 1);
       guide.pause(); guide.src = work.guideUrl || '';
       engine.play(work, opt());
@@ -382,17 +443,23 @@
     function tick() {
       const now = Date.now();
       let best = null;
-      for (const [k, v] of seen) if (map[k] && now - v.t < 3000 && v.ema > Math.min(th.near, -88) && (!best || v.ema > best.ema)) best = { id: map[k], ema: v.ema };
+      let second = -120;
+      for (const [k, v] of seen) {
+        if (!map[k] || now - v.t >= 3000) continue;
+        if (!best || v.ema > best.ema) { if (best) second = Math.max(second, best.ema); best = { id: map[k], ema: v.ema }; }
+        else second = Math.max(second, v.ema);
+      }
+      if (best && (best.ema <= SWITCH || best.ema < second + LEAD)) best = cur ? { id: cur, ema: best.ema } : null;
       if (entering) return;
       const curKey = cur ? Object.keys(map).find((b) => map[b] === cur) : null;
       const curV = curKey && seen.get(curKey);
       const curE = curV && now - curV.t < 3000 ? curV.ema : -120;
       if (best && best.id !== cur) {
-        if (!cur || curE <= th.near || best.ema >= curE + 3) {
+        if (true) {
           candCount = candId === best.id ? candCount + 1 : 1;
           candId = best.id;
           // 0.5秒（2回連続）同じ候補が勝ったときだけ切り替えて誤反応を防ぐ
-          if (!cur || candCount >= 5) {
+          if (!cur || candCount >= 2) {
             candId = null; candCount = 0; entering = best.id;
             enter(best.id, best.ema).catch(() => { status('error', '音を読み込めませんでした'); }).finally(() => { entering = null; });
             return;
@@ -431,7 +498,8 @@
       const rawH = ((a - zero.a + 540) % 360) - 180;
       const dH = ((rawH - heading + 540) % 360) - 180;
       heading = ((heading + dH * 0.28 + 540) % 360) - 180;
-      listener.x = 0.5 + clamp((e.gamma || 0) / 35, -1, 1) * window.SENSOR.tiltX;
+      // 前に倒すほど絵の中へ（0〜35度を3段階のクロスフェードに対応させる）
+      tilt = tilt * 0.85 + clamp((zero.b - (e.beta || 0)) / 35, 0, 1) * 0.15;
       refresh();
     }
 
@@ -440,7 +508,6 @@
       if (started) return;
       const ctx = engine.ensure(); ctx.resume();
       guide.play().then(() => guide.pause()).catch(() => { });
-      [engine.A, engine.B].forEach((x) => { x.muted = true; x.play().then(() => { x.pause(); x.muted = false; }).catch(() => { x.muted = false; }); });
       const perm = (typeof DeviceOrientationEvent !== 'undefined' && typeof DeviceOrientationEvent.requestPermission === 'function')
         ? DeviceOrientationEvent.requestPermission().catch(() => 'denied') : Promise.resolve('granted');
       const scan = navigator.bluetooth && navigator.bluetooth.requestLEScan
